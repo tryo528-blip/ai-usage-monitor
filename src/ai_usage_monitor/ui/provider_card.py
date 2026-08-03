@@ -21,6 +21,7 @@ class ProviderCard(QFrame):
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("%p%")
         self.detail_label = QLabel("조회 불가")
         self.message_label = QLabel("메시지: 대기 중")
         self._layout.addWidget(self.title_label)
@@ -32,6 +33,7 @@ class ProviderCard(QFrame):
     def set_loading(self) -> None:
         self.status_label.setText("상태: 조회 중")
         self.progress_bar.setRange(0, 0)
+        self.progress_bar.setFormat("조회 중...")
         self.detail_label.setText("조회 중...")
         self.message_label.setText("메시지: 데이터 수집 중")
         self._apply_status_style(ProviderStatus.OK)
@@ -43,9 +45,11 @@ class ProviderCard(QFrame):
         if percent is None:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("조회 불가")
         else:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(int(percent))
+            self.progress_bar.setFormat("%p%")
 
         quota_text = self._format_quota(snapshot)
         balance_text = self._format_balance(snapshot)
@@ -60,6 +64,7 @@ class ProviderCard(QFrame):
         self.status_label.setText("상태: 오류")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("조회 불가")
         self.detail_label.setText("조회 불가")
         self.message_label.setText(message)
         self._apply_status_style(ProviderStatus.ERROR)

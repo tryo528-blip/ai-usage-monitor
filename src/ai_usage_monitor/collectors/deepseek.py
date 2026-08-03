@@ -82,10 +82,16 @@ class DeepSeekCollector(Collector):
                 error_code="INVALID_RESPONSE",
             )
 
-        balances = []
-        status = ProviderStatus.OK
         if payload.get("is_available") is False:
-            status = ProviderStatus.CRITICAL
+            return self._build_snapshot(
+                status=ProviderStatus.CRITICAL,
+                message="DeepSeek 잔액을 사용할 수 없습니다.",
+                collected_at=now,
+                last_success_at=now,
+                error_code="BALANCE_UNAVAILABLE",
+            )
+
+        balances = []
 
         for item in payload.get("balance_infos", []):
             if item.get("currency") is None:
@@ -105,7 +111,7 @@ class DeepSeekCollector(Collector):
             )
 
         return self._build_snapshot(
-            status=status,
+            status=ProviderStatus.OK,
             message="정상 조회",
             collected_at=now,
             last_success_at=now,
