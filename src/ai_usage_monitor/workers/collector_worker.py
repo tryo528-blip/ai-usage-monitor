@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from PySide6.QtCore import QObject, QRunnable, Signal
 
 from ai_usage_monitor.collectors.base import Collector
+from ai_usage_monitor.domain.enums import ProviderStatus, SourceType
+from ai_usage_monitor.domain.models import UsageSnapshot
 
 
 class CollectorWorkerSignals(QObject):
-    finished = Signal(str, object)
+    success = Signal(str, object)
+    failure = Signal(str, object)
+    completed = Signal(str)
 
 
 class CollectorWorker(QRunnable):
@@ -16,5 +22,21 @@ class CollectorWorker(QRunnable):
         self.signals = CollectorWorkerSignals()
 
     def run(self) -> None:
-        snapshot = self.collector.collect()
-        self.signals.finished.emit(self.collector.provider_id, snapshot)
+        try:
+            snapshot = self.collector.collect()
+        except Exception as exc:
+            snapshot = UsageSnapshot(
+                provider_id=self.collector.provider_id,
+                provider_name=self.collector.provider_name,
+                source_type=SourceType.OFFICIAL_API,
+                status=ProviderStatus.ERROR,
+                collected_at=datetime.now(timezone.utc),
+                message=f"수집 중 오류: {exc}",
+                error_code="UNKNOWN_ERROR",
+            )
+            self.signals.failure.emit(self.collector.provider_id, snapshot)
+            self.signals.completed.emit(self.collector.provider_id)
+            return
+
+        self.signals.success.emit(self.collector.provider_id, snapshot)
+        self.signals.completed.emit(self.collector.provider_id)

@@ -84,19 +84,23 @@ class DeepSeekCollector(Collector):
 
         balances = []
         status = ProviderStatus.OK
-        for item in payload.get("data", []):
+        if payload.get("is_available") is False:
+            status = ProviderStatus.CRITICAL
+
+        for item in payload.get("balance_infos", []):
             if item.get("currency") is None:
                 continue
-            if item.get("is_available") is False:
-                status = ProviderStatus.CRITICAL
+            total_balance = self._parse_decimal(item.get("total_balance"))
+            granted_balance = self._parse_decimal(item.get("granted_balance"))
+            topped_up_balance = self._parse_decimal(item.get("topped_up_balance"))
             balances.append(
                 CreditBalance(
                     currency=item.get("currency", "USD"),
-                    total=self._parse_decimal(item.get("total")),
-                    remaining=self._parse_decimal(item.get("remaining")),
-                    used=self._parse_decimal(item.get("used")),
-                    granted=self._parse_decimal(item.get("granted")),
-                    topped_up=self._parse_decimal(item.get("topped_up")),
+                    total=total_balance,
+                    remaining=total_balance,
+                    used=None,
+                    granted=granted_balance,
+                    topped_up=topped_up_balance,
                 )
             )
 

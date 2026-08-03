@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QDialog,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -10,7 +12,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ai_usage_monitor.collectors.claude_bridge import ClaudeBridgeCollector
+from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
+from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
+from ai_usage_monitor.collectors.manual import ManualCollector
+from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
+from ai_usage_monitor.domain.enums import ProviderStatus
+from ai_usage_monitor.infrastructure.database import UsageDatabase
+from ai_usage_monitor.infrastructure.secret_store import SecretStore
+from ai_usage_monitor.infrastructure.settings_store import SettingsStore
+from ai_usage_monitor.services.collector_manager import CollectorManager
+
 from .provider_card import ProviderCard
+from .settings_dialog import SettingsDialog
 
 
 class MainWindow(QMainWindow):
@@ -19,6 +33,20 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AI Usage Monitor")
         self.resize(1000, 680)
 
+        self.secret_store = SecretStore()
+        self.settings_store = SettingsStore()
+        self.database = UsageDatabase()
+
+        self._build_ui()
+        self._build_collectors()
+        self._build_timer()
+        self._apply_settings()
+
+        self.refresh_button.clicked.connect(self.refresh_all)
+        self.settings_button.clicked.connect(self._open_settings)
+        QTimer.singleShot(0, self.refresh_all)
+
+    def _build_ui(self) -> None:
         root = QWidget(self)
         layout = QVBoxLayout(root)
 
@@ -32,12 +60,12 @@ class MainWindow(QMainWindow):
 
         cards_layout = QGridLayout()
         self.cards = {
-            "mock": ProviderCard("Mock"),
             "openrouter": ProviderCard("OpenRouter"),
             "deepseek": ProviderCard("DeepSeek"),
             "claude": ProviderCard("Claude"),
             "codex": ProviderCard("Codex"),
-            "manual": ProviderCard("Grok / Gemini"),
+            "grok": ProviderCard("Grok"),
+            "gemini": ProviderCard("Gemini"),
         }
         positions = [
             (0, 0),
@@ -52,3 +80,58 @@ class MainWindow(QMainWindow):
         layout.addLayout(cards_layout)
 
         self.setCentralWidget(root)
+
+    def _build_collectors(self) -> None:
+        collectors = [
+            OpenRouterCollector(secret_store=self.secret_store),
+            DeepSeekCollector(secret_store=self.secret_store),
+            ClaudeBridgeCollector(),
+            CodexAppServerCollector(),
+            ManualCollector("grok", "Grok"),
+            ManualCollector("gemini", "Gemini"),
+        ]
+        self.collector_manager = CollectorManager(collectors)
+        self.collector_manager.register_callback(self._handle_result)
+
+    def _build_timer(self) -> None:
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setInterval(300 * 1000)
+        self.refresh_timer.timeout.connect(self.refresh_all)
+
+    def _apply_settings(self) -> None:
+        settings = self.settings_store.load()
+        enable_auto = bool(settings.get("auto_refresh", True))
+        if enable_auto:
+            self.refresh_timer.start()
+        else:
+            self.refresh_timer.stop()
+
+    def refresh_all(self) -> None:
+        for card in self.cards.values():
+            card.set_loading()
+        self.collector_manager.refresh()
+
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(secret_store=self.secret_store, settings_store=self.settings_store)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._apply_settings()
+
+    def _handle_result(self, result) -> None:
+        card = self.cards.get(result.provider_id)
+        if card is None:
+            return
+
+        snapshot = result.snapshot
+        if snapshot.status in {
+            ProviderStatus.ERROR,
+            ProviderStatus.AUTH_REQUIRED,
+            ProviderStatus.STALE,
+        }:
+            card.set_error(snapshot.message or "조회 실패")
+        else:
+            card.set_snapshot(snapshot)
+
+        try:
+            self.database.save_snapshot(snapshot)
+        except Exception:
+            card.set_error("SQLite 저장 실패")

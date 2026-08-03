@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -34,3 +35,15 @@ def test_usage_database_persists_snapshot(tmp_path) -> None:
 
     snapshot_id = db.save_snapshot(snapshot)
     assert snapshot_id > 0
+
+    with sqlite3.connect(db.db_path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        quota_count = conn.execute("SELECT COUNT(*) FROM quota_windows").fetchone()[0]
+        balance_count = conn.execute("SELECT COUNT(*) FROM credit_balances").fetchone()[0]
+        assert quota_count == 1
+        assert balance_count == 1
+
+        conn.execute("DELETE FROM snapshots WHERE id = ?", (snapshot_id,))
+        conn.commit()
+        assert conn.execute("SELECT COUNT(*) FROM quota_windows").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM credit_balances").fetchone()[0] == 0

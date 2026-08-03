@@ -18,6 +18,7 @@ class UsageDatabase:
     def _initialize(self) -> None:
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA user_version = 1")
+            conn.execute("PRAGMA foreign_keys = ON")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS snapshots (
@@ -78,6 +79,7 @@ class UsageDatabase:
 
     def save_snapshot(self, snapshot: UsageSnapshot) -> int:
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
             cursor = conn.execute(
                 """
                 INSERT INTO snapshots (
@@ -145,6 +147,7 @@ class UsageDatabase:
     def prune_old_records(self, max_age_days: int = 90) -> int:
         cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
         with sqlite3.connect(self.db_path) as conn:
+            conn.execute("PRAGMA foreign_keys = ON")
             cursor = conn.execute(
                 "DELETE FROM snapshots WHERE collected_at < ?",
                 (datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),),

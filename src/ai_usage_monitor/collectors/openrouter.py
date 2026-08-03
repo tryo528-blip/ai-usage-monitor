@@ -85,42 +85,39 @@ class OpenRouterCollector(Collector):
                 error_code="INVALID_RESPONSE",
             )
 
-        usage = data.get("usage", {})
-        daily_usage = usage.get("daily", {})
-        weekly_usage = usage.get("weekly", {})
-        monthly_usage = usage.get("monthly", {})
+        quota_windows = []
+        limit = self._parse_decimal(data.get("limit"))
+        limit_remaining = self._parse_decimal(data.get("limit_remaining"))
+        metadata = {
+            "usage": data.get("usage"),
+            "usage_daily": data.get("usage_daily"),
+            "usage_weekly": data.get("usage_weekly"),
+            "usage_monthly": data.get("usage_monthly"),
+            "limit_reset": data.get("limit_reset"),
+            "expires_at": data.get("expires_at"),
+        }
 
-        quota_windows = [
-            QuotaWindow(
-                key="daily",
-                label="일간 사용량",
-                used_percent=self._parse_percent(daily_usage),
-                used_value=self._parse_decimal(daily_usage.get("used")),
-                limit_value=self._parse_decimal(daily_usage.get("limit")),
-                remaining_value=self._parse_decimal(daily_usage.get("remaining")),
-                unit=daily_usage.get("unit"),
-            ),
-            QuotaWindow(
-                key="weekly",
-                label="주간 사용량",
-                used_percent=self._parse_percent(weekly_usage),
-                used_value=self._parse_decimal(weekly_usage.get("used")),
-                limit_value=self._parse_decimal(weekly_usage.get("limit")),
-                remaining_value=self._parse_decimal(weekly_usage.get("remaining")),
-                unit=weekly_usage.get("unit"),
-            ),
-            QuotaWindow(
-                key="monthly",
-                label="월간 사용량",
-                used_percent=self._parse_percent(monthly_usage),
-                used_value=self._parse_decimal(monthly_usage.get("used")),
-                limit_value=self._parse_decimal(monthly_usage.get("limit")),
-                remaining_value=self._parse_decimal(monthly_usage.get("remaining")),
-                unit=monthly_usage.get("unit"),
-            ),
-        ]
+        if limit is not None and limit_remaining is not None:
+            used_value = limit - limit_remaining
+            used_percent = None
+            if limit > 0:
+                used_percent = float((used_value / limit) * Decimal("100"))
+            quota_key = self._quota_key_from_reset(data.get("limit_reset"))
+            quota_windows.append(
+                QuotaWindow(
+                    key=quota_key,
+                    label=f"{self._label_from_reset(data.get('limit_reset'))} 사용량",
+                    used_percent=used_percent,
+                    used_value=used_value,
+                    limit_value=limit,
+                    remaining_value=limit_remaining,
+                    unit="USD",
+                    resets_at=None,
+                )
+            )
 
         balances = []
+        credit_error = None
         if management_key:
             try:
                 with httpx.Client(timeout=10.0) as client:
@@ -134,18 +131,26 @@ class OpenRouterCollector(Collector):
                     response.raise_for_status()
                     credit_payload = response.json()
                     credit_data = credit_payload.get("data", {})
+                    total_credits = self._parse_decimal(credit_data.get("total_credits"))
+                    total_usage = self._parse_decimal(credit_data.get("total_usage"))
+                    remaining = None
+                    if total_credits is not None and total_usage is not None:
+                        remaining = max(total_credits - total_usage, Decimal("0"))
                     balances.append(
                         CreditBalance(
-                            currency=credit_data.get("currency", "USD"),
-                            total=self._parse_decimal(credit_data.get("total")),
-                            remaining=self._parse_decimal(credit_data.get("remaining")),
-                            used=self._parse_decimal(credit_data.get("used")),
-                            granted=self._parse_decimal(credit_data.get("granted")),
-                            topped_up=self._parse_decimal(credit_data.get("topped_up")),
+                            currency="USD",
+                            total=total_credits,
+                            used=total_usage,
+                            remaining=remaining,
                         )
                     )
-            except httpx.HTTPError:
-                balances = []
+            except httpx.HTTPError as exc:
+                credit_error = str(exc)
+            except ValueError:
+                credit_error = "INVALID_RESPONSE"
+
+        if credit_error is not None:
+            metadata["credit_lookup_error"] = credit_error
 
         return self._build_snapshot(
             status=ProviderStatus.OK,
@@ -154,6 +159,7 @@ class OpenRouterCollector(Collector):
             last_success_at=now,
             quota_windows=quota_windows,
             balances=balances,
+            metadata=metadata,
         )
 
     def _build_snapshot(
@@ -166,6 +172,7 @@ class OpenRouterCollector(Collector):
         last_success_at: datetime | None = None,
         quota_windows: list[QuotaWindow] | None = None,
         balances: list[CreditBalance] | None = None,
+        metadata: dict | None = None,
     ) -> UsageSnapshot:
         return UsageSnapshot(
             provider_id=self.provider_id,
@@ -179,15 +186,8 @@ class OpenRouterCollector(Collector):
             balances=balances or [],
             message=message,
             error_code=error_code,
+            metadata=metadata or {},
         )
-
-    @staticmethod
-    def _parse_percent(value: object) -> float | None:
-        if value is None:
-            return None
-        if isinstance(value, (int, float)):
-            return float(value)
-        return None
 
     @staticmethod
     def _parse_decimal(value: object) -> Decimal | None:
@@ -201,3 +201,23 @@ class OpenRouterCollector(Collector):
             except Exception:
                 return None
         return None
+
+    @staticmethod
+    def _quota_key_from_reset(value: object) -> str:
+        if isinstance(value, str):
+            lowered = value.lower()
+            if "weekly" in lowered:
+                return "weekly"
+            if "monthly" in lowered:
+                return "monthly"
+        return "daily"
+
+    @staticmethod
+    def _label_from_reset(value: object) -> str:
+        if isinstance(value, str):
+            lowered = value.lower()
+            if "weekly" in lowered:
+                return "주간"
+            if "monthly" in lowered:
+                return "월간"
+        return "일간"
