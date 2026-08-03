@@ -32,8 +32,13 @@ class ConnectionTestWorker(QRunnable):
         self.signals = ConnectionTestSignals()
 
     def run(self) -> None:
-        snapshot = self.collector.collect()
-        self.signals.finished.emit(f"{self.label}: {snapshot.status.value} / {snapshot.message}")
+        try:
+            snapshot = self.collector.collect()
+            message = f"{self.label}: {snapshot.status.value} / {snapshot.message}"
+        except Exception as exc:
+            message = f"{self.label}: ERROR / 수집 중 오류: {exc}"
+        finally:
+            self.signals.finished.emit(message)
 
 
 class SettingsDialog(QDialog):
@@ -60,13 +65,13 @@ class SettingsDialog(QDialog):
         self.deepseek_key.setEchoMode(QLineEdit.EchoMode.Password)
 
         self.auto_refresh = QCheckBox("자동 새로고침")
-        self.start_on_launch = QCheckBox("시작 시 실행")
+        self.start_on_launch = QCheckBox("시작 시 실행 (준비 중)")
+        self.start_on_launch.setEnabled(False)
         self.delete_openrouter_key = QCheckBox("OpenRouter 키 삭제")
         self.delete_management_key = QCheckBox("OpenRouter Management 키 삭제")
         self.delete_deepseek_key = QCheckBox("DeepSeek 키 삭제")
 
         self.auto_refresh.setChecked(bool(settings.get("auto_refresh", True)))
-        self.start_on_launch.setChecked(bool(settings.get("start_on_launch", False)))
 
         form.addRow(QLabel("OpenRouter API 키"), self.openrouter_key)
         form.addRow(QLabel("OpenRouter Management 키"), self.management_key)
@@ -91,7 +96,6 @@ class SettingsDialog(QDialog):
     def save_settings(self) -> None:
         settings = self.settings_store.load()
         settings["auto_refresh"] = self.auto_refresh.isChecked()
-        settings["start_on_launch"] = self.start_on_launch.isChecked()
         self.settings_store.save(settings)
 
         for key, widget, delete_checkbox in (

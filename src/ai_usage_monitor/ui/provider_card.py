@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from datetime import timedelta, timezone
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QLabel, QProgressBar, QVBoxLayout
 
+from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import UsageSnapshot
 
 
@@ -33,9 +34,11 @@ class ProviderCard(QFrame):
         self.progress_bar.setRange(0, 0)
         self.detail_label.setText("조회 중...")
         self.message_label.setText("메시지: 데이터 수집 중")
+        self._apply_status_style(ProviderStatus.OK)
 
     def set_snapshot(self, snapshot: UsageSnapshot) -> None:
         self.status_label.setText(f"상태: {snapshot.status.value}")
+        self._apply_status_style(snapshot.status)
         percent = self._highest_percent(snapshot)
         if percent is None:
             self.progress_bar.setRange(0, 100)
@@ -59,6 +62,7 @@ class ProviderCard(QFrame):
         self.progress_bar.setValue(0)
         self.detail_label.setText("조회 불가")
         self.message_label.setText(message)
+        self._apply_status_style(ProviderStatus.ERROR)
 
     @staticmethod
     def _highest_percent(snapshot: UsageSnapshot) -> float | None:
@@ -82,15 +86,20 @@ class ProviderCard(QFrame):
             ):
                 parts.append(f"{quota.label}: 한도 미설정")
                 continue
-            used = quota.used_value if quota.used_value is not None else Decimal("0")
-            limit = quota.limit_value if quota.limit_value is not None else None
-            remaining = quota.remaining_value if quota.remaining_value is not None else None
-            usage_text = f"{used}"
+
+            used = quota.used_value
+            limit = quota.limit_value
+            remaining = quota.remaining_value
+            usage_parts = []
+            if used is not None:
+                usage_parts.append(f"사용 {used}")
+            else:
+                usage_parts.append("사용 조회 불가")
             if limit is not None:
-                usage_text = f"{used}/{limit}"
+                usage_parts.append(f"한도 {limit}")
             if remaining is not None:
-                usage_text = f"{usage_text} (잔여 {remaining})"
-            parts.append(f"{quota.label}: {usage_text}")
+                usage_parts.append(f"잔여 {remaining}")
+            parts.append(f"{quota.label}: {' / '.join(usage_parts)}")
         return " ; ".join(parts)
 
     @staticmethod
@@ -108,11 +117,27 @@ class ProviderCard(QFrame):
     def _format_reset(snapshot: UsageSnapshot) -> str:
         for quota in snapshot.quota_windows:
             if quota.resets_at:
-                return f"초기화: {quota.resets_at.isoformat()}"
+                seoul_time = quota.resets_at.astimezone(timezone(timedelta(hours=9)))
+                return f"초기화: {seoul_time.strftime('%Y-%m-%d %H:%M:%S')}"
         return "초기화: 조회 불가"
 
     @staticmethod
     def _format_last_success(snapshot: UsageSnapshot) -> str:
         if snapshot.last_success_at is None:
             return "최근 성공: 없음"
-        return f"최근 성공: {snapshot.last_success_at.isoformat()}"
+        seoul_time = snapshot.last_success_at.astimezone(timezone(timedelta(hours=9)))
+        return f"최근 성공: {seoul_time.strftime('%Y-%m-%d %H:%M:%S')}"
+
+    def _apply_status_style(self, status: ProviderStatus) -> None:
+        palette = {
+            ProviderStatus.OK: "#2e7d32",
+            ProviderStatus.WARNING: "#f9a825",
+            ProviderStatus.CRITICAL: "#c62828",
+            ProviderStatus.AUTH_REQUIRED: "#ef6c00",
+            ProviderStatus.UNAVAILABLE: "#616161",
+            ProviderStatus.ERROR: "#b71c1c",
+            ProviderStatus.STALE: "#6d4c41",
+            ProviderStatus.MANUAL: "#1565c0",
+        }
+        color = palette.get(status, "#000000")
+        self.status_label.setStyleSheet(f"color: {color}; font-weight: bold;")

@@ -35,8 +35,7 @@ class CollectorWorker(QRunnable):
                 error_code="UNKNOWN_ERROR",
             )
             self.signals.failure.emit(self.collector.provider_id, snapshot)
+        else:
+            self.signals.success.emit(self.collector.provider_id, snapshot)
+        finally:
             self.signals.completed.emit(self.collector.provider_id)
-            return
-
-        self.signals.success.emit(self.collector.provider_id, snapshot)
-        self.signals.completed.emit(self.collector.provider_id)

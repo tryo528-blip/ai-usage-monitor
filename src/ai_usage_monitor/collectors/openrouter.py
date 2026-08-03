@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 
 import httpx
@@ -88,12 +88,13 @@ class OpenRouterCollector(Collector):
         quota_windows = []
         limit = self._parse_decimal(data.get("limit"))
         limit_remaining = self._parse_decimal(data.get("limit_remaining"))
+        limit_reset = data.get("limit_reset")
         metadata = {
             "usage": data.get("usage"),
             "usage_daily": data.get("usage_daily"),
             "usage_weekly": data.get("usage_weekly"),
             "usage_monthly": data.get("usage_monthly"),
-            "limit_reset": data.get("limit_reset"),
+            "limit_reset": limit_reset,
             "expires_at": data.get("expires_at"),
         }
 
@@ -102,17 +103,18 @@ class OpenRouterCollector(Collector):
             used_percent = None
             if limit > 0:
                 used_percent = float((used_value / limit) * Decimal("100"))
-            quota_key = self._quota_key_from_reset(data.get("limit_reset"))
+            quota_key = self._quota_key_from_reset(limit_reset)
             quota_windows.append(
                 QuotaWindow(
                     key=quota_key,
-                    label=f"{self._label_from_reset(data.get('limit_reset'))} 사용량",
+                    label=f"{self._label_from_reset(limit_reset)} 사용량",
                     used_percent=used_percent,
                     used_value=used_value,
                     limit_value=limit,
                     remaining_value=limit_remaining,
                     unit="USD",
-                    resets_at=None,
+                    window_minutes=self._window_minutes(limit_reset),
+                    resets_at=self._resets_at(limit_reset),
                 )
             )
 
@@ -204,20 +206,56 @@ class OpenRouterCollector(Collector):
 
     @staticmethod
     def _quota_key_from_reset(value: object) -> str:
-        if isinstance(value, str):
-            lowered = value.lower()
-            if "weekly" in lowered:
-                return "weekly"
-            if "monthly" in lowered:
-                return "monthly"
-        return "daily"
+        if not isinstance(value, str):
+            return "lifetime"
+        lowered = value.lower()
+        if lowered == "weekly":
+            return "weekly"
+        if lowered == "monthly":
+            return "monthly"
+        if lowered == "daily":
+            return "daily"
+        return "lifetime"
 
     @staticmethod
     def _label_from_reset(value: object) -> str:
+        if not isinstance(value, str):
+            return "누적"
+        lowered = value.lower()
+        if lowered == "weekly":
+            return "주간"
+        if lowered == "monthly":
+            return "월간"
+        if lowered == "daily":
+            return "일간"
+        return "누적"
+
+    @staticmethod
+    def _window_minutes(value: object) -> int | None:
         if isinstance(value, str):
             lowered = value.lower()
-            if "weekly" in lowered:
-                return "주간"
-            if "monthly" in lowered:
-                return "월간"
-        return "일간"
+            if lowered == "daily":
+                return 24 * 60
+            if lowered == "weekly":
+                return 7 * 24 * 60
+            if lowered == "monthly":
+                return 30 * 24 * 60
+        return None
+
+    @staticmethod
+    def _resets_at(value: object) -> datetime | None:
+        now = datetime.now(timezone.utc)
+        if value == "daily":
+            next_day = now.date() + timedelta(days=1)
+            return datetime.combine(next_day, time.min, tzinfo=timezone.utc)
+        if value == "weekly":
+            days_until_monday = (7 - now.weekday()) % 7
+            if days_until_monday == 0:
+                days_until_monday = 7
+            next_monday = now.date() + timedelta(days=days_until_monday)
+            return datetime.combine(next_monday, time.min, tzinfo=timezone.utc)
+        if value == "monthly":
+            year = now.year if now.month < 12 else now.year + 1
+            month = now.month + 1 if now.month < 12 else 1
+            return datetime(year, month, 1, tzinfo=timezone.utc)
+        return None

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QDialog,
@@ -22,29 +24,41 @@ from ai_usage_monitor.infrastructure.database import UsageDatabase
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
 from ai_usage_monitor.infrastructure.settings_store import SettingsStore
 from ai_usage_monitor.services.collector_manager import CollectorManager
+from ai_usage_monitor.services.status_policy import determine_status
 
 from .provider_card import ProviderCard
 from .settings_dialog import SettingsDialog
 
 
 class MainWindow(QMainWindow):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        secret_store: SecretStore | None = None,
+        settings_store: SettingsStore | None = None,
+        database: UsageDatabase | None = None,
+        collector_manager: CollectorManager | None = None,
+        startup_refresh: bool = True,
+        database_path: Path | None = None,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("AI Usage Monitor")
         self.resize(1000, 680)
 
-        self.secret_store = SecretStore()
-        self.settings_store = SettingsStore()
-        self.database = UsageDatabase()
+        self.secret_store = secret_store or SecretStore()
+        self.settings_store = settings_store or SettingsStore()
+        self.database = database or UsageDatabase(database_path)
+        self.startup_refresh = startup_refresh
 
         self._build_ui()
-        self._build_collectors()
+        self._build_collectors(collector_manager=collector_manager)
         self._build_timer()
         self._apply_settings()
 
         self.refresh_button.clicked.connect(self.refresh_all)
         self.settings_button.clicked.connect(self._open_settings)
-        QTimer.singleShot(0, self.refresh_all)
+        if self.startup_refresh:
+            QTimer.singleShot(0, self.refresh_all)
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -81,16 +95,18 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(root)
 
-    def _build_collectors(self) -> None:
-        collectors = [
-            OpenRouterCollector(secret_store=self.secret_store),
-            DeepSeekCollector(secret_store=self.secret_store),
-            ClaudeBridgeCollector(),
-            CodexAppServerCollector(),
-            ManualCollector("grok", "Grok"),
-            ManualCollector("gemini", "Gemini"),
-        ]
-        self.collector_manager = CollectorManager(collectors)
+    def _build_collectors(self, *, collector_manager: CollectorManager | None = None) -> None:
+        if collector_manager is None:
+            collectors = [
+                OpenRouterCollector(secret_store=self.secret_store),
+                DeepSeekCollector(secret_store=self.secret_store),
+                ClaudeBridgeCollector(),
+                CodexAppServerCollector(),
+                ManualCollector("grok", "Grok"),
+                ManualCollector("gemini", "Gemini"),
+            ]
+            collector_manager = CollectorManager(collectors)
+        self.collector_manager = collector_manager
         self.collector_manager.register_callback(self._handle_result)
 
     def _build_timer(self) -> None:
@@ -122,11 +138,11 @@ class MainWindow(QMainWindow):
             return
 
         snapshot = result.snapshot
-        if snapshot.status in {
-            ProviderStatus.ERROR,
-            ProviderStatus.AUTH_REQUIRED,
-            ProviderStatus.STALE,
-        }:
+        normalized_status = determine_status(snapshot)
+        if normalized_status != snapshot.status:
+            snapshot = snapshot.model_copy(update={"status": normalized_status})
+
+        if snapshot.status in {ProviderStatus.ERROR, ProviderStatus.STALE}:
             card.set_error(snapshot.message or "조회 실패")
         else:
             card.set_snapshot(snapshot)

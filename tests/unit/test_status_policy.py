@@ -31,3 +31,19 @@ def test_status_policy_thresholds() -> None:
 
     snapshot.balances = [CreditBalance(currency="USD", remaining=Decimal("0"))]
     assert determine_status(snapshot) == ProviderStatus.CRITICAL
+
+
+def test_status_policy_preserves_explicit_severity() -> None:
+    now = datetime.now(timezone.utc)
+    snapshot = UsageSnapshot(
+        provider_id="openrouter",
+        provider_name="OpenRouter",
+        source_type=SourceType.OFFICIAL_API,
+        status=ProviderStatus.WARNING,
+        collected_at=now,
+        quota_windows=[QuotaWindow(key="weekly", label="주간", used_percent=50.0)],
+    )
+    assert determine_status(snapshot) == ProviderStatus.WARNING
+
+    snapshot.status = ProviderStatus.CRITICAL
+    assert determine_status(snapshot) == ProviderStatus.CRITICAL
