@@ -55,6 +55,8 @@ def test_deepseek_collector_marks_unavailable_as_critical() -> None:
         snapshot = collector.collect()
 
     assert snapshot.status == ProviderStatus.CRITICAL
+    assert snapshot.message == "DeepSeek 잔액을 사용할 수 없습니다."
+    assert snapshot.error_code == "BALANCE_UNAVAILABLE"
 
 
 def test_deepseek_collector_handles_auth_required() -> None:
