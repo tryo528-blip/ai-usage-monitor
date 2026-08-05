@@ -17,7 +17,7 @@ class VerticalUsageBar(QWidget):
         self.color = QColor(color)
         self.light_color = QColor(light_color)
         self.remaining = 0.0
-        self.setFixedSize(28, 112)
+        self.setFixedSize(28, 100)
 
     def set_remaining(self, value: float | None) -> None:
         self.remaining = max(0.0, min(100.0, value or 0.0))
@@ -60,7 +60,7 @@ class ProviderCard(QFrame):
         super().__init__()
         self.summary_type = summary_type
         self.quota_fields = quota_fields
-        self.setFixedSize(38, 206)
+        self.setFixedSize(38, 162)
         self.setFrameStyle(QFrame.Shape.NoFrame)
 
         layout = QVBoxLayout(self)
@@ -68,9 +68,13 @@ class ProviderCard(QFrame):
         layout.setSpacing(2)
 
         self.title_label = QLabel(title)
-        self.title_label.setFixedHeight(30)
+        self.title_label.setFixedHeight(21)
         self.title_label.setWordWrap(True)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.time_label = QLabel("", self)
+        self.time_label.setFixedHeight(14)
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
 
         self.bar = VerticalUsageBar(
             color=bar_color,
@@ -78,18 +82,22 @@ class ProviderCard(QFrame):
             parent=self,
         )
         self.value_label = QLabel("조회 중", self)
-        self.value_label.setFixedHeight(58)
+        self.value_label.setFixedHeight(18)
+        self.value_label.setContentsMargins(0, 2, 0, 0)
         self.value_label.setWordWrap(True)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        layout.addWidget(self.value_label)
+        layout.addWidget(self.time_label)
         layout.addWidget(self.bar, 0, Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(self.value_label)
+        layout.addSpacing(-3)
         layout.addWidget(self.title_label)
-        layout.addStretch(1)
+        layout.addStretch(0)
         self._set_font_10()
 
     def set_loading(self) -> None:
+        self.time_label.clear()
         self.bar.clear()
         self.value_label.setText("조회 중")
         self._apply_status_style(ProviderStatus.OK)
@@ -118,6 +126,7 @@ class ProviderCard(QFrame):
         self._apply_status_style(snapshot.status)
 
     def set_error(self, message: str) -> None:
+        self.time_label.clear()
         self.bar.clear()
         self.value_label.setText(message)
         self.value_label.setToolTip(message)
@@ -131,6 +140,9 @@ class ProviderCard(QFrame):
             return False
         self.value_label.setText(summary)
         self.value_label.setToolTip(summary)
+        has_five_hour_window = any(key == "five_hour" for key, _ in self.quota_fields)
+        reset_time = self._format_reset_time(snapshot) if has_five_hour_window else None
+        self.time_label.setText(reset_time or "")
         quota = self._find_quota(snapshot, self.quota_fields[0][0])
         if quota is not None and quota.used_percent is not None:
             self.bar.set_remaining(100.0 - quota.used_percent)
@@ -147,6 +159,7 @@ class ProviderCard(QFrame):
             return False
         percent = max(0.0, min(100.0, float(amount) / 20 * 100))
         text = f"{self._format_percent(percent)}%"
+        self.time_label.clear()
         self.value_label.setText(text)
         self.value_label.setToolTip(text.replace("\n", " "))
         self.bar.set_remaining(float(amount) / 20 * 100)
@@ -181,11 +194,7 @@ class ProviderCard(QFrame):
             return None
         parts: list[str] = []
         if five_hour is not None and five_hour.used_percent is not None:
-            value = f"{cls._format_remaining_percent(five_hour.used_percent)}%"
-            if five_hour.resets_at is not None:
-                seoul_time = five_hour.resets_at.astimezone(timezone(timedelta(hours=9)))
-                value += f"\n{seoul_time.strftime('%H:%M')}"
-            parts.append(value)
+            parts.append(f"{cls._format_remaining_percent(five_hour.used_percent)}%")
         if weekly is not None and weekly.used_percent is not None:
             parts.append(f"{cls._format_remaining_percent(weekly.used_percent)}%")
         return " / ".join(parts) or None
@@ -219,10 +228,15 @@ class ProviderCard(QFrame):
         else:
             return None
 
-        if quota.resets_at is not None and quota.key in {"five_hour", "5h", "5_hour"}:
-            seoul_time = quota.resets_at.astimezone(timezone(timedelta(hours=9)))
-            value += f" ({seoul_time.strftime('%H:%M')})"
         return value
+
+    @classmethod
+    def _format_reset_time(cls, snapshot: UsageSnapshot) -> str | None:
+        quota = cls._find_quota(snapshot, "five_hour")
+        if quota is None or quota.resets_at is None:
+            return None
+        seoul_time = quota.resets_at.astimezone(timezone(timedelta(hours=9)))
+        return seoul_time.strftime("%H:%M")
 
     @classmethod
     def _format_balance(cls, snapshot: UsageSnapshot) -> str | None:
@@ -290,6 +304,7 @@ class ProviderCard(QFrame):
         card_font = QFont(font)
         card_font.setPointSize(8)
         self.title_label.setFont(card_font)
+        self.time_label.setFont(card_font)
         self.value_label.setFont(card_font)
 
     def _apply_status_style(self, status: ProviderStatus) -> None:
@@ -303,4 +318,6 @@ class ProviderCard(QFrame):
             ProviderStatus.STALE: "#6d4c41",
             ProviderStatus.MANUAL: "#1565c0",
         }
-        self.value_label.setStyleSheet(f"color: {palette.get(status, '#000000')};")
+        color = palette.get(status, "#000000")
+        self.time_label.setStyleSheet(f"color: {color};")
+        self.value_label.setStyleSheet(f"color: {color};")

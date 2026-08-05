@@ -54,14 +54,18 @@ def test_main_window_builds_cards(qtbot, tmp_path) -> None:
     )
     qtbot.addWidget(window)
     titles = [card.title_label.text() for card in window.cards.values()]
-    assert titles == ["Claude", "Claude", "Codex", "Grok", "O.R", "DSeek"]
+    assert titles == ["CLD-W", "CLD-5", "CDX", "Grok", "O.R", "DSeek"]
     assert window.cards["claude"].quota_fields == (("weekly", "\uc8fc\uac04 \uc0ac\uc6a9\ub7c9"),)
     assert window.cards["claude_5h"].quota_fields == (
         ("five_hour", "5\uc2dc\uac04 \uc0ac\uc6a9\ub7c9"),
     )
     assert window.cards["codex"].quota_fields == (("weekly", "\uc8fc\uac04 \uc0ac\uc6a9\ub7c9"),)
-    assert window.size().width() == 260
-    assert window.size().height() == 284
+    assert window.size().width() == 270
+    assert window.size().height() == 210
+    assert window.refresh_button.size().width() == 54
+    assert window.settings_button.size().width() == 42
+    assert window.refresh_button.size().height() == 24
+    assert window.refresh_button.font().pointSize() == 8
 
 
 def test_main_window_refreshes_card_applies_policy_and_saves_sqlite(qtbot, tmp_path) -> None:

@@ -48,7 +48,8 @@ def test_provider_card_shows_requested_quota_fields_and_reset_time(qtbot) -> Non
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "40/100 \uc0ac\uc6a9 / 10/50 \uc0ac\uc6a9 (13:00)"
+    assert card.value_label.text() == "40/100 \uc0ac\uc6a9 / 10/50 \uc0ac\uc6a9"
+    assert card.time_label.text() == "13:00"
     assert card.font().pointSize() == 10
     assert card.title_label.font().pointSize() == 8
     assert card.value_label.font().pointSize() == 8
@@ -132,7 +133,8 @@ def test_provider_card_compacts_five_hour_and_weekly_percentages(qtbot) -> None:
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "67%\n17:40 / 71%"
+    assert card.value_label.text() == "67% / 71%"
+    assert card.time_label.text() == "17:40"
 
 
 def test_provider_card_keeps_weekly_usage_when_five_hour_block_is_missing(qtbot) -> None:

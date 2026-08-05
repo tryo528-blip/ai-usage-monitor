@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, QPoint
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -42,8 +42,10 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("AI Usage Monitor")
-        self.setFixedSize(260, 284)
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setFixedSize(270, 210)
         self._set_font_10()
+        self._drag_position: QPoint | None = None
 
         self.secret_store = secret_store or SecretStore()
         self.settings_store = settings_store or SettingsStore()
@@ -57,32 +59,86 @@ class MainWindow(QMainWindow):
 
         self.refresh_button.clicked.connect(self.refresh_all)
         self.settings_button.clicked.connect(self._open_settings)
+        self.minimize_button.clicked.connect(self.showMinimized)
+        self.close_button.clicked.connect(self.close)
         if self.startup_refresh:
             QTimer.singleShot(0, self.refresh_all)
 
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+
+        if (
+            event.position().y() <= 36
+            and self.childAt(event.position().toPoint()) not in (
+                self.refresh_button,
+                self.settings_button,
+                self.minimize_button,
+                self.close_button,
+            )
+        ):
+            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:
+        if self._drag_position is not None and event.buttons() == Qt.MouseButton.LeftButton:
+            self.move(event.globalPosition().toPoint() - self._drag_position)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:
+        self._drag_position = None
+        super().mouseReleaseEvent(event)
+
     def _build_ui(self) -> None:
         root = QWidget(self)
+        root.setObjectName("app_frame")
         root.setFont(self.font())
-        root.setStyleSheet("background-color: #ffffff;")
+        root.setStyleSheet(
+            "#app_frame { background-color: #ffffff; border: 1px solid #000000; }"
+        )
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(2)
 
         top_bar = QHBoxLayout()
-        top_bar.setSpacing(2)
-        title = QLabel("AI Usage Monitor")
+        top_bar.setSpacing(4)
+        title = QLabel("남은 사용량")
         self.refresh_button = QPushButton("새로고침")
         self.settings_button = QPushButton("설정")
-        self.refresh_button.setFixedHeight(22)
-        self.settings_button.setFixedHeight(22)
+        self.minimize_button = QPushButton("—")
+        self.close_button = QPushButton("×")
+        button_font = QFont(self.font())
+        button_font.setPointSize(8)
+        self.refresh_button.setFont(button_font)
+        self.settings_button.setFont(button_font)
+        self.minimize_button.setFont(button_font)
+        self.close_button.setFont(button_font)
+        self.refresh_button.setFixedSize(54, 24)
+        self.settings_button.setFixedSize(42, 24)
+        self.minimize_button.setFixedSize(24, 24)
+        self.close_button.setFixedSize(24, 24)
+        self.refresh_button.setToolTip("새로고침")
+        self.settings_button.setToolTip("설정")
+        self.minimize_button.setToolTip("최소화")
+        self.close_button.setToolTip("닫기")
+        self.minimize_button.setFlat(True)
+        self.close_button.setFlat(True)
+        self.close_button.setStyleSheet("QPushButton { color: #c62828; font-weight: bold; }")
         top_bar.addWidget(title)
         top_bar.addStretch(1)
         top_bar.addWidget(self.refresh_button)
         top_bar.addWidget(self.settings_button)
+        top_bar.addWidget(self.minimize_button)
+        top_bar.addWidget(self.close_button)
         layout.addLayout(top_bar)
 
         rows_layout = QHBoxLayout()
-        rows_layout.setSpacing(4)
+        rows_layout.setSpacing(6)
         rows_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cards = {
             "claude": ProviderCard(
@@ -126,9 +182,9 @@ class MainWindow(QMainWindow):
                 bar_light_color="#bbdefb",
             ),
         }
-        self.cards["claude"].title_label.setText("Claude")
-        self.cards["claude_5h"].title_label.setText("Claude")
-        self.cards["codex"].title_label.setText("Codex")
+        self.cards["claude"].title_label.setText("CLD-W")
+        self.cards["claude_5h"].title_label.setText("CLD-5")
+        self.cards["codex"].title_label.setText("CDX")
         self.cards["grok"].title_label.setText("Grok")
         self.cards["openrouter"].title_label.setText("O.R")
         self.cards["deepseek"].title_label.setText("DSeek")
