@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QPoint
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
