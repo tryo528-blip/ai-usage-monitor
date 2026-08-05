@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("AI Usage Monitor")
-        self.setFixedSize(360, 220)
+        self.setFixedSize(260, 284)
         self._set_font_10()
 
         self.secret_store = secret_store or SecretStore()
@@ -63,44 +63,75 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         root = QWidget(self)
         root.setFont(self.font())
+        root.setStyleSheet("background-color: #ffffff;")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(2)
 
         top_bar = QHBoxLayout()
-        top_bar.setSpacing(4)
+        top_bar.setSpacing(2)
         title = QLabel("AI Usage Monitor")
         self.refresh_button = QPushButton("새로고침")
         self.settings_button = QPushButton("설정")
-        self.refresh_button.setFixedHeight(24)
-        self.settings_button.setFixedHeight(24)
+        self.refresh_button.setFixedHeight(22)
+        self.settings_button.setFixedHeight(22)
         top_bar.addWidget(title)
         top_bar.addStretch(1)
         top_bar.addWidget(self.refresh_button)
         top_bar.addWidget(self.settings_button)
         layout.addLayout(top_bar)
 
-        rows_layout = QVBoxLayout()
-        rows_layout.setSpacing(3)
+        rows_layout = QHBoxLayout()
+        rows_layout.setSpacing(4)
+        rows_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cards = {
             "claude": ProviderCard(
                 "클로드",
                 summary_type="quota",
-                quota_fields=(("weekly", "주간 사용량"), ("five_hour", "5시간 사용량")),
+                quota_fields=(("weekly", "주간 사용량"),),
+                bar_color="#7e57c2",
+                bar_light_color="#d1c4e9",
+            ),
+            "claude_5h": ProviderCard(
+                "클로드",
+                summary_type="quota",
+                quota_fields=(("five_hour", "5시간 사용량"),),
+                bar_color="#7e57c2",
+                bar_light_color="#d1c4e9",
             ),
             "codex": ProviderCard(
                 "코덱스",
                 summary_type="quota",
                 quota_fields=(("weekly", "주간 사용량"),),
+                bar_color="#2e7d32",
+                bar_light_color="#c8e6c9",
             ),
             "grok": ProviderCard(
                 "그록",
                 summary_type="quota",
                 quota_fields=(("weekly", "주간 사용량"),),
+                bar_color="#ef6c00",
+                bar_light_color="#ffe0b2",
             ),
-            "openrouter": ProviderCard("오픈라우터", summary_type="balance"),
-            "deepseek": ProviderCard("딥시크", summary_type="balance"),
+            "openrouter": ProviderCard(
+                "오픈라우터",
+                summary_type="balance",
+                bar_color="#00897b",
+                bar_light_color="#b2dfdb",
+            ),
+            "deepseek": ProviderCard(
+                "딥시크",
+                summary_type="balance",
+                bar_color="#1565c0",
+                bar_light_color="#bbdefb",
+            ),
         }
+        self.cards["claude"].title_label.setText("Claude")
+        self.cards["claude_5h"].title_label.setText("Claude")
+        self.cards["codex"].title_label.setText("Codex")
+        self.cards["grok"].title_label.setText("Grok")
+        self.cards["openrouter"].title_label.setText("O.R")
+        self.cards["deepseek"].title_label.setText("DSeek")
         for card in self.cards.values():
             rows_layout.addWidget(card)
         layout.addLayout(rows_layout)
@@ -144,8 +175,12 @@ class MainWindow(QMainWindow):
             self._apply_settings()
 
     def _handle_result(self, result) -> None:
-        card = self.cards.get(result.provider_id)
-        if card is None:
+        cards = [
+            card
+            for key, card in self.cards.items()
+            if key == result.provider_id or key.startswith(f"{result.provider_id}_")
+        ]
+        if not cards:
             return
 
         snapshot = result.snapshot
@@ -153,11 +188,13 @@ class MainWindow(QMainWindow):
         if normalized_status != snapshot.status:
             snapshot = snapshot.model_copy(update={"status": normalized_status})
 
-        card.set_snapshot(snapshot)
+        for card in cards:
+            card.set_snapshot(snapshot)
         try:
             self.database.save_snapshot(snapshot)
         except Exception:
-            card.set_error("SQLite 저장 실패")
+            for card in cards:
+                card.set_error("SQLite 저장 실패")
 
     def _set_font_10(self) -> None:
         font = QFont(self.font())

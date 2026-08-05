@@ -36,7 +36,8 @@ ruff format --check .
 ## Notes
 
 - No production credentials are stored in the repository.
-- Codex integration remains intentionally stubbed as `UNAVAILABLE` for Phase 3.
+- Codex usage reads the latest local rate-limit snapshot from
+  `C:\Users\sswce\.codex\sessions`.
 - Claude usage reads the fixed Claude CLI config root `C:\Users\sswce\.claude` by running hidden
   `/usage` and parsing the session/week percentages and reset times.
 - Grok usage reads the fixed CLI auth file `C:\Users\sswce\.grok\auth.json` and polls authenticated

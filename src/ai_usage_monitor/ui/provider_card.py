@@ -3,12 +3,48 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 from decimal import Decimal
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
 
 from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
+
+
+class VerticalUsageBar(QWidget):
+    def __init__(self, *, color: str, light_color: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.color = QColor(color)
+        self.light_color = QColor(light_color)
+        self.remaining = 0.0
+        self.setFixedSize(28, 112)
+
+    def set_remaining(self, value: float | None) -> None:
+        self.remaining = max(0.0, min(100.0, value or 0.0))
+        self.update()
+
+    def clear(self) -> None:
+        self.remaining = 0.0
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: ARG002
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        track = QRectF(6, 3, 16, self.height() - 6)
+        painter.setPen(QPen(self.light_color.darker(120), 1))
+        painter.setBrush(self.light_color)
+        painter.drawRoundedRect(track, 8, 8)
+
+        fill_height = track.height() * self.remaining / 100
+        if fill_height <= 0:
+            return
+        fill = QRectF(track.left(), track.bottom() - fill_height, track.width(), fill_height)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self.color)
+        painter.save()
+        painter.setClipRect(track)
+        painter.drawRoundedRect(fill, 8, 8)
+        painter.restore()
 
 
 class ProviderCard(QFrame):
@@ -18,29 +54,43 @@ class ProviderCard(QFrame):
         *,
         summary_type: str,
         quota_fields: tuple[tuple[str, str], ...] = (),
+        bar_color: str = "#1565c0",
+        bar_light_color: str = "#bbdefb",
     ) -> None:
         super().__init__()
         self.summary_type = summary_type
         self.quota_fields = quota_fields
-        self.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.setFixedHeight(28)
+        self.setFixedSize(38, 206)
+        self.setFrameStyle(QFrame.Shape.NoFrame)
 
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 2, 8, 2)
-        layout.setSpacing(8)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
 
         self.title_label = QLabel(title)
-        self.title_label.setFixedWidth(72)
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.value_label = QLabel("조회 중")
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.title_label.setFixedHeight(30)
+        self.title_label.setWordWrap(True)
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.bar = VerticalUsageBar(
+            color=bar_color,
+            light_color=bar_light_color,
+            parent=self,
+        )
+        self.value_label = QLabel("조회 중", self)
+        self.value_label.setFixedHeight(58)
+        self.value_label.setWordWrap(True)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
+        layout.addWidget(self.value_label)
+        layout.addWidget(self.bar, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(self.title_label)
-        layout.addWidget(self.value_label, 1)
+        layout.addStretch(1)
         self._set_font_10()
 
     def set_loading(self) -> None:
+        self.bar.clear()
         self.value_label.setText("조회 중")
         self._apply_status_style(ProviderStatus.OK)
 
@@ -52,34 +102,67 @@ class ProviderCard(QFrame):
             ProviderStatus.UNAVAILABLE,
         }:
             if self.summary_type == "quota" and snapshot.quota_windows:
-                summary = self._format_quota(snapshot)
-                if summary is not None:
-                    self.value_label.setText(summary)
+                if self._render_quota(snapshot):
                     self._apply_status_style(snapshot.status)
                     return
             self.set_error(self._reason(snapshot))
             return
 
         if self.summary_type == "balance":
-            summary = self._format_balance(snapshot)
-        else:
-            summary = self._format_quota(snapshot)
-
-        if summary is None:
+            if not self._render_balance(snapshot):
+                self.set_error(self._reason(snapshot))
+                return
+        elif not self._render_quota(snapshot):
             self.set_error(self._reason(snapshot))
             return
-
-        self.value_label.setText(summary)
         self._apply_status_style(snapshot.status)
 
     def set_error(self, message: str) -> None:
+        self.bar.clear()
         self.value_label.setText(message)
+        self.value_label.setToolTip(message)
         self._apply_status_style(ProviderStatus.ERROR)
 
+    def _render_quota(self, snapshot: UsageSnapshot) -> bool:
+        if not self.quota_fields:
+            return False
+        summary = self._format_quota(snapshot)
+        if summary is None:
+            return False
+        self.value_label.setText(summary)
+        self.value_label.setToolTip(summary)
+        quota = self._find_quota(snapshot, self.quota_fields[0][0])
+        if quota is not None and quota.used_percent is not None:
+            self.bar.set_remaining(100.0 - quota.used_percent)
+        else:
+            self.bar.clear()
+        return True
+
+    def _render_balance(self, snapshot: UsageSnapshot) -> bool:
+        if not snapshot.balances:
+            return False
+        balance = snapshot.balances[0]
+        amount = balance.remaining if balance.remaining is not None else balance.total
+        if amount is None:
+            return False
+        percent = max(0.0, min(100.0, float(amount) / 20 * 100))
+        text = f"{self._format_percent(percent)}%"
+        self.value_label.setText(text)
+        self.value_label.setToolTip(text.replace("\n", " "))
+        self.bar.set_remaining(float(amount) / 20 * 100)
+        return True
+
     def _format_quota(self, snapshot: UsageSnapshot) -> str | None:
+        quotas = {key: self._find_quota(snapshot, key) for key, _ in self.quota_fields}
+        if "five_hour" in quotas and any(
+            quotas[key] is not None and quotas[key].used_percent is not None
+            for key in ("five_hour", "weekly")
+        ):
+            return self._format_compact_percent_quota(quotas.get("five_hour"), quotas.get("weekly"))
+
         parts: list[str] = []
         for key, label in self.quota_fields:
-            quota = self._find_quota(snapshot, key)
+            quota = quotas[key]
             if quota is None:
                 parts.append(self._format_missing_quota(snapshot, key, label))
                 continue
@@ -87,54 +170,68 @@ class ProviderCard(QFrame):
             if value is None:
                 parts.append(self._format_missing_quota(snapshot, key, label))
                 continue
-            parts.append(value)
+            parts.append(value.replace(" \ub0a8\uc74c", "").replace("5H ", ""))
         return " / ".join(parts) if parts else None
+
+    @classmethod
+    def _format_compact_percent_quota(
+        cls, five_hour: QuotaWindow | None, weekly: QuotaWindow | None
+    ) -> str | None:
+        if five_hour is None and weekly is None:
+            return None
+        parts: list[str] = []
+        if five_hour is not None and five_hour.used_percent is not None:
+            value = f"{cls._format_remaining_percent(five_hour.used_percent)}%"
+            if five_hour.resets_at is not None:
+                seoul_time = five_hour.resets_at.astimezone(timezone(timedelta(hours=9)))
+                value += f"\n{seoul_time.strftime('%H:%M')}"
+            parts.append(value)
+        if weekly is not None and weekly.used_percent is not None:
+            parts.append(f"{cls._format_remaining_percent(weekly.used_percent)}%")
+        return " / ".join(parts) or None
 
     @staticmethod
     def _format_missing_quota(snapshot: UsageSnapshot, key: str, label: str) -> str:
         if snapshot.error_code == "ACTIVE_BLOCK_MISSING" and key == "five_hour":
-            return f"{label}: 활성 블록 없음"
+            return "5H 없음"
         return f"{label}: 조회 불가"
 
     @classmethod
     def _format_quota_value(cls, quota: QuotaWindow, label: str) -> str | None:
         if quota.used_percent is not None:
-            value = f"{label}: {cls._format_percent(quota.used_percent)}% 사용"
+            value = f"{cls._format_remaining_percent(quota.used_percent)}% 남음"
         elif quota.used_value is not None and quota.limit_value is not None:
             value = (
-                f"{label}: {cls._format_amount(quota.used_value, quota.unit)}"
+                f"{cls._format_amount(quota.used_value, quota.unit)}"
                 f"/{cls._format_amount(quota.limit_value, quota.unit)} 사용"
             )
         elif quota.remaining_value is not None and quota.limit_value is not None:
             value = (
-                f"{label}: 잔여 {cls._format_amount(quota.remaining_value, quota.unit)}"
+                f"잔여 {cls._format_amount(quota.remaining_value, quota.unit)}"
                 f"/{cls._format_amount(quota.limit_value, quota.unit)}"
             )
         elif quota.limit_value is not None:
-            value = f"{label}: {cls._format_amount(quota.limit_value, quota.unit)}"
+            value = cls._format_amount(quota.limit_value, quota.unit)
         elif quota.remaining_value is not None:
-            value = f"{label}: 잔여 {cls._format_amount(quota.remaining_value, quota.unit)}"
+            value = f"잔여 {cls._format_amount(quota.remaining_value, quota.unit)}"
         elif quota.used_value is not None:
-            value = f"{label}: {cls._format_amount(quota.used_value, quota.unit)} 사용"
+            value = f"{cls._format_amount(quota.used_value, quota.unit)} 사용"
         else:
             return None
 
-        if quota.resets_at is not None:
+        if quota.resets_at is not None and quota.key in {"five_hour", "5h", "5_hour"}:
             seoul_time = quota.resets_at.astimezone(timezone(timedelta(hours=9)))
-            value += f" (리셋 {seoul_time.strftime('%m-%d %H:%M')} KST)"
+            value += f" ({seoul_time.strftime('%H:%M')})"
         return value
 
     @classmethod
     def _format_balance(cls, snapshot: UsageSnapshot) -> str | None:
-        if not snapshot.balances:
-            return None
         values = []
         for balance in snapshot.balances:
             amount = balance.remaining if balance.remaining is not None else balance.total
-            if amount is None:
-                continue
-            values.append(f"{cls._format_number(amount)} {balance.currency}")
-        return f"잔액: {', '.join(values)}" if values else None
+            if amount is not None:
+                values.append(f"{cls._format_balance_amount(amount)} {balance.currency}")
+        return ", ".join(values) if values else None
 
     @staticmethod
     def _find_quota(snapshot: UsageSnapshot, key: str) -> QuotaWindow | None:
@@ -156,8 +253,7 @@ class ProviderCard(QFrame):
             return snapshot.message
         if self.summary_type == "balance":
             return "잔액 조회 불가"
-        labels = " / ".join(label for _, label in self.quota_fields)
-        return f"{labels} 조회 불가"
+        return "조회 불가"
 
     @staticmethod
     def _format_number(value: Decimal) -> str:
@@ -169,6 +265,10 @@ class ProviderCard(QFrame):
         whole = f"{int(text or '0'):,}"
         return f"{whole}.{fraction}" if fraction else whole
 
+    @staticmethod
+    def _format_balance_amount(value: Decimal) -> str:
+        return f"{value:.2f}".rstrip("0").rstrip(".")
+
     @classmethod
     def _format_amount(cls, value: Decimal, unit: str | None) -> str:
         number = cls._format_number(value)
@@ -179,16 +279,22 @@ class ProviderCard(QFrame):
         text = f"{value:.1f}".rstrip("0").rstrip(".")
         return text or "0"
 
+    @classmethod
+    def _format_remaining_percent(cls, used_percent: float) -> str:
+        return cls._format_percent(max(0.0, min(100.0, 100.0 - used_percent)))
+
     def _set_font_10(self) -> None:
         font = QFont(self.font())
         font.setPointSize(10)
         self.setFont(font)
-        self.title_label.setFont(font)
-        self.value_label.setFont(font)
+        card_font = QFont(font)
+        card_font.setPointSize(8)
+        self.title_label.setFont(card_font)
+        self.value_label.setFont(card_font)
 
     def _apply_status_style(self, status: ProviderStatus) -> None:
         palette = {
-            ProviderStatus.OK: "#2e7d32",
+            ProviderStatus.OK: "#202124",
             ProviderStatus.WARNING: "#f9a825",
             ProviderStatus.CRITICAL: "#c62828",
             ProviderStatus.AUTH_REQUIRED: "#ef6c00",
@@ -197,5 +303,4 @@ class ProviderCard(QFrame):
             ProviderStatus.STALE: "#6d4c41",
             ProviderStatus.MANUAL: "#1565c0",
         }
-        color = palette.get(status, "#000000")
-        self.value_label.setStyleSheet(f"color: {color};")
+        self.value_label.setStyleSheet(f"color: {palette.get(status, '#000000')};")

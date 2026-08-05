@@ -54,9 +54,14 @@ def test_main_window_builds_cards(qtbot, tmp_path) -> None:
     )
     qtbot.addWidget(window)
     titles = [card.title_label.text() for card in window.cards.values()]
-    assert titles == ["클로드", "코덱스", "그록", "오픈라우터", "딥시크"]
-    assert window.size().width() == 360
-    assert window.size().height() == 220
+    assert titles == ["Claude", "Claude", "Codex", "Grok", "O.R", "DSeek"]
+    assert window.cards["claude"].quota_fields == (("weekly", "\uc8fc\uac04 \uc0ac\uc6a9\ub7c9"),)
+    assert window.cards["claude_5h"].quota_fields == (
+        ("five_hour", "5\uc2dc\uac04 \uc0ac\uc6a9\ub7c9"),
+    )
+    assert window.cards["codex"].quota_fields == (("weekly", "\uc8fc\uac04 \uc0ac\uc6a9\ub7c9"),)
+    assert window.size().width() == 260
+    assert window.size().height() == 284
 
 
 def test_main_window_refreshes_card_applies_policy_and_saves_sqlite(qtbot, tmp_path) -> None:
@@ -77,7 +82,7 @@ def test_main_window_refreshes_card_applies_policy_and_saves_sqlite(qtbot, tmp_p
     window.refresh_all()
     card = window.cards["openrouter"]
     qtbot.waitUntil(
-        lambda: card.value_label.text() == "잔액: 0 USD",
+        lambda: card.value_label.text() == "0%",
         timeout=5000,
     )
 
