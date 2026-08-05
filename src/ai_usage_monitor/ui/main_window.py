@@ -68,14 +68,11 @@ class MainWindow(QMainWindow):
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
 
-        if (
-            event.position().y() <= 36
-            and self.childAt(event.position().toPoint()) not in (
-                self.refresh_button,
-                self.settings_button,
-                self.minimize_button,
-                self.close_button,
-            )
+        if event.position().y() <= 36 and self.childAt(event.position().toPoint()) not in (
+            self.refresh_button,
+            self.settings_button,
+            self.minimize_button,
+            self.close_button,
         ):
             self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
@@ -98,9 +95,7 @@ class MainWindow(QMainWindow):
         root = QWidget(self)
         root.setObjectName("app_frame")
         root.setFont(self.font())
-        root.setStyleSheet(
-            "#app_frame { background-color: #ffffff; border: 1px solid #000000; }"
-        )
+        root.setStyleSheet("#app_frame { background-color: #ffffff; border: 1px solid #000000; }")
         layout = QVBoxLayout(root)
         layout.setContentsMargins(6, 4, 6, 6)
         layout.setSpacing(2)
