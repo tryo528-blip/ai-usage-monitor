@@ -2,11 +2,12 @@
 
 Implemented in this phase:
 
-- OpenRouter via official HTTP API
+- Claude Code usage via hidden CLI `/usage` bridge (`C:\Users\sswce\.claude`)
+- Grok weekly usage via the fixed CLI auth file (`C:\Users\sswce\.grok\auth.json`) and authenticated billing endpoints
+- OpenRouter balance via the official `/credits` API using a Management Key
 - DeepSeek via official HTTP API
-- Manual collector for Grok/Gemini placeholders
+- Gemini remains outside the compact five-row UI
 
 Deferred to Phase 3:
 
-- Claude statusline bridge
 - Codex App Server JSON-RPC

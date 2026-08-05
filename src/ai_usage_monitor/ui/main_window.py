@@ -3,9 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QDialog,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -17,9 +17,8 @@ from PySide6.QtWidgets import (
 from ai_usage_monitor.collectors.claude_bridge import ClaudeBridgeCollector
 from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
 from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
-from ai_usage_monitor.collectors.manual import ManualCollector
+from ai_usage_monitor.collectors.grok import GrokCollector
 from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
-from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.infrastructure.database import UsageDatabase
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
 from ai_usage_monitor.infrastructure.settings_store import SettingsStore
@@ -43,7 +42,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self.setWindowTitle("AI Usage Monitor")
-        self.resize(1000, 680)
+        self.setFixedSize(360, 220)
+        self._set_font_10()
 
         self.secret_store = secret_store or SecretStore()
         self.settings_store = settings_store or SettingsStore()
@@ -62,48 +62,59 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self) -> None:
         root = QWidget(self)
+        root.setFont(self.font())
         layout = QVBoxLayout(root)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
 
         top_bar = QHBoxLayout()
-        top_bar.addWidget(QLabel("AI Usage Monitor"))
+        top_bar.setSpacing(4)
+        title = QLabel("AI Usage Monitor")
         self.refresh_button = QPushButton("새로고침")
         self.settings_button = QPushButton("설정")
+        self.refresh_button.setFixedHeight(24)
+        self.settings_button.setFixedHeight(24)
+        top_bar.addWidget(title)
+        top_bar.addStretch(1)
         top_bar.addWidget(self.refresh_button)
         top_bar.addWidget(self.settings_button)
         layout.addLayout(top_bar)
 
-        cards_layout = QGridLayout()
+        rows_layout = QVBoxLayout()
+        rows_layout.setSpacing(3)
         self.cards = {
-            "openrouter": ProviderCard("OpenRouter"),
-            "deepseek": ProviderCard("DeepSeek"),
-            "claude": ProviderCard("Claude"),
-            "codex": ProviderCard("Codex"),
-            "grok": ProviderCard("Grok"),
-            "gemini": ProviderCard("Gemini"),
+            "claude": ProviderCard(
+                "클로드",
+                summary_type="quota",
+                quota_fields=(("weekly", "주간 사용량"), ("five_hour", "5시간 사용량")),
+            ),
+            "codex": ProviderCard(
+                "코덱스",
+                summary_type="quota",
+                quota_fields=(("weekly", "주간 사용량"),),
+            ),
+            "grok": ProviderCard(
+                "그록",
+                summary_type="quota",
+                quota_fields=(("weekly", "주간 사용량"),),
+            ),
+            "openrouter": ProviderCard("오픈라우터", summary_type="balance"),
+            "deepseek": ProviderCard("딥시크", summary_type="balance"),
         }
-        positions = [
-            (0, 0),
-            (0, 1),
-            (1, 0),
-            (1, 1),
-            (2, 0),
-            (2, 1),
-        ]
-        for (_key, card), pos in zip(self.cards.items(), positions, strict=True):
-            cards_layout.addWidget(card, *pos)
-        layout.addLayout(cards_layout)
+        for card in self.cards.values():
+            rows_layout.addWidget(card)
+        layout.addLayout(rows_layout)
 
         self.setCentralWidget(root)
 
     def _build_collectors(self, *, collector_manager: CollectorManager | None = None) -> None:
         if collector_manager is None:
             collectors = [
-                OpenRouterCollector(secret_store=self.secret_store),
-                DeepSeekCollector(secret_store=self.secret_store),
                 ClaudeBridgeCollector(),
                 CodexAppServerCollector(),
-                ManualCollector("grok", "Grok"),
-                ManualCollector("gemini", "Gemini"),
+                GrokCollector(),
+                OpenRouterCollector(secret_store=self.secret_store),
+                DeepSeekCollector(secret_store=self.secret_store),
             ]
             collector_manager = CollectorManager(collectors)
         self.collector_manager = collector_manager
@@ -111,7 +122,7 @@ class MainWindow(QMainWindow):
 
     def _build_timer(self) -> None:
         self.refresh_timer = QTimer(self)
-        self.refresh_timer.setInterval(300 * 1000)
+        self.refresh_timer.setInterval(600 * 1000)
         self.refresh_timer.timeout.connect(self.refresh_all)
 
     def _apply_settings(self) -> None:
@@ -142,12 +153,13 @@ class MainWindow(QMainWindow):
         if normalized_status != snapshot.status:
             snapshot = snapshot.model_copy(update={"status": normalized_status})
 
-        if snapshot.status in {ProviderStatus.ERROR, ProviderStatus.STALE}:
-            card.set_error(snapshot.message or "조회 실패")
-        else:
-            card.set_snapshot(snapshot)
-
+        card.set_snapshot(snapshot)
         try:
             self.database.save_snapshot(snapshot)
         except Exception:
             card.set_error("SQLite 저장 실패")
+
+    def _set_font_10(self) -> None:
+        font = QFont(self.font())
+        font.setPointSize(10)
+        self.setFont(font)

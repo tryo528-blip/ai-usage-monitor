@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import httpx
 
 from ai_usage_monitor.domain.enums import ProviderStatus, SourceType
-from ai_usage_monitor.domain.models import CreditBalance, QuotaWindow, UsageSnapshot
+from ai_usage_monitor.domain.models import CreditBalance, UsageSnapshot
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
 
 from .base import Collector
@@ -20,29 +20,33 @@ class OpenRouterCollector(Collector):
         self.secret_store = secret_store or SecretStore()
 
     def is_configured(self) -> bool:
-        return bool(self.secret_store.get("openrouter.api_key"))
+        return bool(self.secret_store.get("openrouter.management_key"))
 
     def collect(self) -> UsageSnapshot:
-        api_key = self.secret_store.get("openrouter.api_key")
         management_key = self.secret_store.get("openrouter.management_key")
         now = datetime.now(timezone.utc)
 
-        if not api_key:
+        if not management_key:
             return self._build_snapshot(
                 status=ProviderStatus.AUTH_REQUIRED,
-                message="API 키가 설정되지 않았습니다.",
+                message="OpenRouter Management Key가 설정되지 않았습니다.",
                 collected_at=now,
-                error_code="NOT_CONFIGURED",
+                error_code="MANAGEMENT_KEY_NOT_CONFIGURED",
             )
 
-        headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
         try:
             with httpx.Client(timeout=10.0) as client:
-                response = client.get("https://openrouter.ai/api/v1/key", headers=headers)
+                response = client.get(
+                    "https://openrouter.ai/api/v1/credits",
+                    headers={
+                        "Authorization": f"Bearer {management_key}",
+                        "Accept": "application/json",
+                    },
+                )
                 if response.status_code in {401, 403}:
                     return self._build_snapshot(
                         status=ProviderStatus.AUTH_REQUIRED,
-                        message="OpenRouter 인증이 필요합니다.",
+                        message="OpenRouter Management Key 인증이 필요합니다.",
                         collected_at=now,
                         error_code="AUTH_FAILED",
                     )
@@ -56,13 +60,12 @@ class OpenRouterCollector(Collector):
                 if response.status_code == 429:
                     return self._build_snapshot(
                         status=ProviderStatus.WARNING,
-                        message="OpenRouter 한도에 도달했습니다.",
+                        message="OpenRouter 요청이 제한되었습니다.",
                         collected_at=now,
                         error_code="RATE_LIMITED",
                     )
                 response.raise_for_status()
                 payload = response.json()
-                data = payload.get("data", {})
         except httpx.TimeoutException:
             return self._build_snapshot(
                 status=ProviderStatus.ERROR,
@@ -85,83 +88,30 @@ class OpenRouterCollector(Collector):
                 error_code="INVALID_RESPONSE",
             )
 
-        quota_windows = []
-        limit = self._parse_decimal(data.get("limit"))
-        limit_remaining = self._parse_decimal(data.get("limit_remaining"))
-        limit_reset = data.get("limit_reset")
-        metadata = {
-            "usage": data.get("usage"),
-            "usage_daily": data.get("usage_daily"),
-            "usage_weekly": data.get("usage_weekly"),
-            "usage_monthly": data.get("usage_monthly"),
-            "limit_reset": limit_reset,
-            "expires_at": data.get("expires_at"),
-        }
-
-        if limit is not None and limit_remaining is not None:
-            used_value = limit - limit_remaining
-            used_percent = None
-            if limit > 0:
-                used_percent = float((used_value / limit) * Decimal("100"))
-            quota_key = self._quota_key_from_reset(limit_reset)
-            quota_windows.append(
-                QuotaWindow(
-                    key=quota_key,
-                    label=f"{self._label_from_reset(limit_reset)} 사용량",
-                    used_percent=used_percent,
-                    used_value=used_value,
-                    limit_value=limit,
-                    remaining_value=limit_remaining,
-                    unit="USD",
-                    window_minutes=self._window_minutes(limit_reset),
-                    resets_at=self._resets_at(limit_reset),
-                )
+        data = payload.get("data", {})
+        total_credits = self._parse_decimal(data.get("total_credits"))
+        total_usage = self._parse_decimal(data.get("total_usage"))
+        if total_credits is None or total_usage is None:
+            return self._build_snapshot(
+                status=ProviderStatus.ERROR,
+                message="OpenRouter 잔액 응답에 필요한 값이 없습니다.",
+                collected_at=now,
+                error_code="INVALID_RESPONSE",
             )
 
-        balances = []
-        credit_error = None
-        if management_key:
-            try:
-                with httpx.Client(timeout=10.0) as client:
-                    response = client.get(
-                        "https://openrouter.ai/api/v1/credits",
-                        headers={
-                            "Authorization": f"Bearer {management_key}",
-                            "Accept": "application/json",
-                        },
-                    )
-                    response.raise_for_status()
-                    credit_payload = response.json()
-                    credit_data = credit_payload.get("data", {})
-                    total_credits = self._parse_decimal(credit_data.get("total_credits"))
-                    total_usage = self._parse_decimal(credit_data.get("total_usage"))
-                    remaining = None
-                    if total_credits is not None and total_usage is not None:
-                        remaining = max(total_credits - total_usage, Decimal("0"))
-                    balances.append(
-                        CreditBalance(
-                            currency="USD",
-                            total=total_credits,
-                            used=total_usage,
-                            remaining=remaining,
-                        )
-                    )
-            except httpx.HTTPError as exc:
-                credit_error = str(exc)
-            except ValueError:
-                credit_error = "INVALID_RESPONSE"
-
-        if credit_error is not None:
-            metadata["credit_lookup_error"] = credit_error
-
+        remaining = max(total_credits - total_usage, Decimal("0"))
+        balance = CreditBalance(
+            currency="USD",
+            total=total_credits,
+            used=total_usage,
+            remaining=remaining,
+        )
         return self._build_snapshot(
             status=ProviderStatus.OK,
             message="정상 조회",
             collected_at=now,
             last_success_at=now,
-            quota_windows=quota_windows,
-            balances=balances,
-            metadata=metadata,
+            balances=[balance],
         )
 
     def _build_snapshot(
@@ -172,9 +122,7 @@ class OpenRouterCollector(Collector):
         collected_at: datetime,
         error_code: str | None = None,
         last_success_at: datetime | None = None,
-        quota_windows: list[QuotaWindow] | None = None,
         balances: list[CreditBalance] | None = None,
-        metadata: dict | None = None,
     ) -> UsageSnapshot:
         return UsageSnapshot(
             provider_id=self.provider_id,
@@ -184,11 +132,9 @@ class OpenRouterCollector(Collector):
             collected_at=collected_at,
             last_success_at=last_success_at,
             stale_after_seconds=900,
-            quota_windows=quota_windows or [],
             balances=balances or [],
             message=message,
             error_code=error_code,
-            metadata=metadata or {},
         )
 
     @staticmethod
@@ -202,60 +148,4 @@ class OpenRouterCollector(Collector):
                 return Decimal(str(value))
             except Exception:
                 return None
-        return None
-
-    @staticmethod
-    def _quota_key_from_reset(value: object) -> str:
-        if not isinstance(value, str):
-            return "lifetime"
-        lowered = value.lower()
-        if lowered == "weekly":
-            return "weekly"
-        if lowered == "monthly":
-            return "monthly"
-        if lowered == "daily":
-            return "daily"
-        return "lifetime"
-
-    @staticmethod
-    def _label_from_reset(value: object) -> str:
-        if not isinstance(value, str):
-            return "누적"
-        lowered = value.lower()
-        if lowered == "weekly":
-            return "주간"
-        if lowered == "monthly":
-            return "월간"
-        if lowered == "daily":
-            return "일간"
-        return "누적"
-
-    @staticmethod
-    def _window_minutes(value: object) -> int | None:
-        if isinstance(value, str):
-            lowered = value.lower()
-            if lowered == "daily":
-                return 24 * 60
-            if lowered == "weekly":
-                return 7 * 24 * 60
-            if lowered == "monthly":
-                return 30 * 24 * 60
-        return None
-
-    @staticmethod
-    def _resets_at(value: object) -> datetime | None:
-        now = datetime.now(timezone.utc)
-        if value == "daily":
-            next_day = now.date() + timedelta(days=1)
-            return datetime.combine(next_day, time.min, tzinfo=timezone.utc)
-        if value == "weekly":
-            days_until_monday = (7 - now.weekday()) % 7
-            if days_until_monday == 0:
-                days_until_monday = 7
-            next_monday = now.date() + timedelta(days=days_until_monday)
-            return datetime.combine(next_monday, time.min, tzinfo=timezone.utc)
-        if value == "monthly":
-            year = now.year if now.month < 12 else now.year + 1
-            month = now.month + 1 if now.month < 12 else 1
-            return datetime(year, month, 1, tzinfo=timezone.utc)
         return None

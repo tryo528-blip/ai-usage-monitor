@@ -1,137 +1,190 @@
 from __future__ import annotations
 
 from datetime import timedelta, timezone
+from decimal import Decimal
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QFrame, QLabel, QProgressBar, QVBoxLayout
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel
 
 from ai_usage_monitor.domain.enums import ProviderStatus
-from ai_usage_monitor.domain.models import UsageSnapshot
+from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
 
 
 class ProviderCard(QFrame):
-    def __init__(self, title: str) -> None:
+    def __init__(
+        self,
+        title: str,
+        *,
+        summary_type: str,
+        quota_fields: tuple[tuple[str, str], ...] = (),
+    ) -> None:
         super().__init__()
+        self.summary_type = summary_type
+        self.quota_fields = quota_fields
         self.setFrameStyle(QFrame.Shape.StyledPanel)
-        self.setMinimumWidth(260)
-        self._layout = QVBoxLayout(self)
+        self.setFixedHeight(28)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(8, 2, 8, 2)
+        layout.setSpacing(8)
+
         self.title_label = QLabel(title)
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
-        self.status_label = QLabel("상태: 미조회")
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("%p%")
-        self.detail_label = QLabel("조회 불가")
-        self.message_label = QLabel("메시지: 대기 중")
-        self._layout.addWidget(self.title_label)
-        self._layout.addWidget(self.status_label)
-        self._layout.addWidget(self.progress_bar)
-        self._layout.addWidget(self.detail_label)
-        self._layout.addWidget(self.message_label)
+        self.title_label.setFixedWidth(72)
+        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self.value_label = QLabel("조회 중")
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+
+        layout.addWidget(self.title_label)
+        layout.addWidget(self.value_label, 1)
+        self._set_font_10()
 
     def set_loading(self) -> None:
-        self.status_label.setText("상태: 조회 중")
-        self.progress_bar.setRange(0, 0)
-        self.progress_bar.setFormat("조회 중...")
-        self.detail_label.setText("조회 중...")
-        self.message_label.setText("메시지: 데이터 수집 중")
+        self.value_label.setText("조회 중")
         self._apply_status_style(ProviderStatus.OK)
 
     def set_snapshot(self, snapshot: UsageSnapshot) -> None:
-        self.status_label.setText(f"상태: {snapshot.status.value}")
-        self._apply_status_style(snapshot.status)
-        percent = self._highest_percent(snapshot)
-        if percent is None:
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(0)
-            self.progress_bar.setFormat("조회 불가")
-        else:
-            self.progress_bar.setRange(0, 100)
-            self.progress_bar.setValue(int(percent))
-            self.progress_bar.setFormat("%p%")
+        if snapshot.status in {
+            ProviderStatus.AUTH_REQUIRED,
+            ProviderStatus.ERROR,
+            ProviderStatus.STALE,
+            ProviderStatus.UNAVAILABLE,
+        }:
+            if self.summary_type == "quota" and snapshot.quota_windows:
+                summary = self._format_quota(snapshot)
+                if summary is not None:
+                    self.value_label.setText(summary)
+                    self._apply_status_style(snapshot.status)
+                    return
+            self.set_error(self._reason(snapshot))
+            return
 
-        quota_text = self._format_quota(snapshot)
-        balance_text = self._format_balance(snapshot)
-        reset_text = self._format_reset(snapshot)
-        last_text = self._format_last_success(snapshot)
-        self.detail_label.setText(
-            " | ".join(part for part in [quota_text, balance_text, reset_text, last_text] if part)
-        )
-        self.message_label.setText(snapshot.message or "메시지: 정상 조회")
+        if self.summary_type == "balance":
+            summary = self._format_balance(snapshot)
+        else:
+            summary = self._format_quota(snapshot)
+
+        if summary is None:
+            self.set_error(self._reason(snapshot))
+            return
+
+        self.value_label.setText(summary)
+        self._apply_status_style(snapshot.status)
 
     def set_error(self, message: str) -> None:
-        self.status_label.setText("상태: 오류")
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("조회 불가")
-        self.detail_label.setText("조회 불가")
-        self.message_label.setText(message)
+        self.value_label.setText(message)
         self._apply_status_style(ProviderStatus.ERROR)
 
-    @staticmethod
-    def _highest_percent(snapshot: UsageSnapshot) -> float | None:
-        values = [
-            quota.used_percent for quota in snapshot.quota_windows if quota.used_percent is not None
-        ]
-        if not values:
-            return None
-        return max(values)
-
-    @staticmethod
-    def _format_quota(snapshot: UsageSnapshot) -> str:
-        if not snapshot.quota_windows:
-            return "한도: 조회 불가"
-        parts = []
-        for quota in snapshot.quota_windows:
-            if (
-                quota.used_value is None
-                and quota.limit_value is None
-                and quota.remaining_value is None
-            ):
-                parts.append(f"{quota.label}: 한도 미설정")
+    def _format_quota(self, snapshot: UsageSnapshot) -> str | None:
+        parts: list[str] = []
+        for key, label in self.quota_fields:
+            quota = self._find_quota(snapshot, key)
+            if quota is None:
+                parts.append(self._format_missing_quota(snapshot, key, label))
                 continue
-
-            used = quota.used_value
-            limit = quota.limit_value
-            remaining = quota.remaining_value
-            usage_parts = []
-            if used is not None:
-                usage_parts.append(f"사용 {used}")
-            else:
-                usage_parts.append("사용 조회 불가")
-            if limit is not None:
-                usage_parts.append(f"한도 {limit}")
-            if remaining is not None:
-                usage_parts.append(f"잔여 {remaining}")
-            parts.append(f"{quota.label}: {' / '.join(usage_parts)}")
-        return " ; ".join(parts)
+            value = self._format_quota_value(quota, label)
+            if value is None:
+                parts.append(self._format_missing_quota(snapshot, key, label))
+                continue
+            parts.append(value)
+        return " / ".join(parts) if parts else None
 
     @staticmethod
-    def _format_balance(snapshot: UsageSnapshot) -> str:
+    def _format_missing_quota(snapshot: UsageSnapshot, key: str, label: str) -> str:
+        if snapshot.error_code == "ACTIVE_BLOCK_MISSING" and key == "five_hour":
+            return f"{label}: 활성 블록 없음"
+        return f"{label}: 조회 불가"
+
+    @classmethod
+    def _format_quota_value(cls, quota: QuotaWindow, label: str) -> str | None:
+        if quota.used_percent is not None:
+            value = f"{label}: {cls._format_percent(quota.used_percent)}% 사용"
+        elif quota.used_value is not None and quota.limit_value is not None:
+            value = (
+                f"{label}: {cls._format_amount(quota.used_value, quota.unit)}"
+                f"/{cls._format_amount(quota.limit_value, quota.unit)} 사용"
+            )
+        elif quota.remaining_value is not None and quota.limit_value is not None:
+            value = (
+                f"{label}: 잔여 {cls._format_amount(quota.remaining_value, quota.unit)}"
+                f"/{cls._format_amount(quota.limit_value, quota.unit)}"
+            )
+        elif quota.limit_value is not None:
+            value = f"{label}: {cls._format_amount(quota.limit_value, quota.unit)}"
+        elif quota.remaining_value is not None:
+            value = f"{label}: 잔여 {cls._format_amount(quota.remaining_value, quota.unit)}"
+        elif quota.used_value is not None:
+            value = f"{label}: {cls._format_amount(quota.used_value, quota.unit)} 사용"
+        else:
+            return None
+
+        if quota.resets_at is not None:
+            seoul_time = quota.resets_at.astimezone(timezone(timedelta(hours=9)))
+            value += f" (리셋 {seoul_time.strftime('%m-%d %H:%M')} KST)"
+        return value
+
+    @classmethod
+    def _format_balance(cls, snapshot: UsageSnapshot) -> str | None:
         if not snapshot.balances:
-            return "잔액: 조회 불가"
-        balances = []
+            return None
+        values = []
         for balance in snapshot.balances:
-            remaining = balance.remaining if balance.remaining is not None else "조회 불가"
-            used = balance.used if balance.used is not None else "조회 불가"
-            balances.append(f"{balance.currency}: {remaining} (사용 {used})")
-        return " ; ".join(balances)
+            amount = balance.remaining if balance.remaining is not None else balance.total
+            if amount is None:
+                continue
+            values.append(f"{cls._format_number(amount)} {balance.currency}")
+        return f"잔액: {', '.join(values)}" if values else None
 
     @staticmethod
-    def _format_reset(snapshot: UsageSnapshot) -> str:
+    def _find_quota(snapshot: UsageSnapshot, key: str) -> QuotaWindow | None:
+        normalized_key = key.lower().replace("-", "_").replace(" ", "_")
+        aliases = {
+            "weekly": {"weekly", "week", "7day", "7_day"},
+            "five_hour": {"five_hour", "5h", "5_hour", "5-hour"},
+        }
+        candidates = aliases.get(normalized_key, {normalized_key})
         for quota in snapshot.quota_windows:
-            if quota.resets_at:
-                seoul_time = quota.resets_at.astimezone(timezone(timedelta(hours=9)))
-                return f"초기화: {seoul_time.strftime('%Y-%m-%d %H:%M:%S')}"
-        return "초기화: 조회 불가"
+            quota_key = quota.key.lower().replace("-", "_").replace(" ", "_")
+            quota_label = quota.label.lower()
+            if quota_key in candidates or any(candidate in quota_label for candidate in candidates):
+                return quota
+        return None
+
+    def _reason(self, snapshot: UsageSnapshot) -> str:
+        if snapshot.message and snapshot.message != "정상 조회":
+            return snapshot.message
+        if self.summary_type == "balance":
+            return "잔액 조회 불가"
+        labels = " / ".join(label for _, label in self.quota_fields)
+        return f"{labels} 조회 불가"
 
     @staticmethod
-    def _format_last_success(snapshot: UsageSnapshot) -> str:
-        if snapshot.last_success_at is None:
-            return "최근 성공: 없음"
-        seoul_time = snapshot.last_success_at.astimezone(timezone(timedelta(hours=9)))
-        return f"최근 성공: {seoul_time.strftime('%Y-%m-%d %H:%M:%S')}"
+    def _format_number(value: Decimal) -> str:
+        text = format(value, "f")
+        fraction = ""
+        if "." in text:
+            text, fraction = text.split(".", 1)
+            fraction = fraction.rstrip("0")
+        whole = f"{int(text or '0'):,}"
+        return f"{whole}.{fraction}" if fraction else whole
+
+    @classmethod
+    def _format_amount(cls, value: Decimal, unit: str | None) -> str:
+        number = cls._format_number(value)
+        return f"{number} {unit}" if unit else number
+
+    @staticmethod
+    def _format_percent(value: float) -> str:
+        text = f"{value:.1f}".rstrip("0").rstrip(".")
+        return text or "0"
+
+    def _set_font_10(self) -> None:
+        font = QFont(self.font())
+        font.setPointSize(10)
+        self.setFont(font)
+        self.title_label.setFont(font)
+        self.value_label.setFont(font)
 
     def _apply_status_style(self, status: ProviderStatus) -> None:
         palette = {
@@ -145,4 +198,4 @@ class ProviderCard(QFrame):
             ProviderStatus.MANUAL: "#1565c0",
         }
         color = palette.get(status, "#000000")
-        self.status_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+        self.value_label.setStyleSheet(f"color: {color};")

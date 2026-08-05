@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+import os
+
+from PySide6.QtCore import QObject, QProcess, QRunnable, QThreadPool, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -24,11 +27,10 @@ class ConnectionTestSignals(QObject):
 
 
 class ConnectionTestWorker(QRunnable):
-    def __init__(self, collector, label: str, secret_store: FakeSecretStore) -> None:
+    def __init__(self, collector, label: str) -> None:
         super().__init__()
         self.collector = collector
         self.label = label
-        self.secret_store = secret_store
         self.signals = ConnectionTestSignals()
 
     def run(self) -> None:
@@ -49,6 +51,9 @@ class SettingsDialog(QDialog):
     ) -> None:
         super().__init__()
         self.setWindowTitle("설정")
+        font = QFont(self.font())
+        font.setPointSize(10)
+        self.setFont(font)
         self.secret_store = secret_store or SecretStore()
         self.settings_store = settings_store or SettingsStore()
         self._pending_test_count = 0
@@ -57,8 +62,6 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.openrouter_key = QLineEdit()
-        self.openrouter_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.management_key = QLineEdit()
         self.management_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.deepseek_key = QLineEdit()
@@ -67,19 +70,23 @@ class SettingsDialog(QDialog):
         self.auto_refresh = QCheckBox("자동 새로고침")
         self.start_on_launch = QCheckBox("시작 시 실행 (준비 중)")
         self.start_on_launch.setEnabled(False)
-        self.delete_openrouter_key = QCheckBox("OpenRouter 키 삭제")
         self.delete_management_key = QCheckBox("OpenRouter Management 키 삭제")
         self.delete_deepseek_key = QCheckBox("DeepSeek 키 삭제")
 
         self.auto_refresh.setChecked(bool(settings.get("auto_refresh", True)))
 
-        form.addRow(QLabel("OpenRouter API 키"), self.openrouter_key)
         form.addRow(QLabel("OpenRouter Management 키"), self.management_key)
         form.addRow(QLabel("DeepSeek API 키"), self.deepseek_key)
         layout.addLayout(form)
+
+        auth_buttons = QHBoxLayout()
+        self.claude_auth_button = QPushButton("Claude 인증")
+        self.grok_auth_button = QPushButton("Grok 인증")
+        auth_buttons.addWidget(self.claude_auth_button)
+        auth_buttons.addWidget(self.grok_auth_button)
+        layout.addLayout(auth_buttons)
         layout.addWidget(self.auto_refresh)
         layout.addWidget(self.start_on_launch)
-        layout.addWidget(self.delete_openrouter_key)
         layout.addWidget(self.delete_management_key)
         layout.addWidget(self.delete_deepseek_key)
 
@@ -92,6 +99,24 @@ class SettingsDialog(QDialog):
 
         self.save_button.clicked.connect(self.save_settings)
         self.test_button.clicked.connect(self.test_connection)
+        self.claude_auth_button.clicked.connect(self._launch_claude_auth)
+        self.grok_auth_button.clicked.connect(self._launch_grok_auth)
+
+    def _launch_claude_auth(self) -> None:
+        self._start_cli("Claude", "claude", ["auth", "login"])
+
+    def _launch_grok_auth(self) -> None:
+        self._start_cli("Grok", "grok", ["login"])
+
+    def _start_cli(self, label: str, command: str, arguments: list[str]) -> None:
+        if os.name == "nt":
+            program = os.environ.get("ComSpec", "cmd.exe")
+            process_arguments = ["/k", command, *arguments]
+        else:
+            program = command
+            process_arguments = arguments
+        if not QProcess.startDetached(program, process_arguments):
+            QMessageBox.warning(self, f"{label} 인증", f"{label} 인증 창을 열 수 없습니다.")
 
     def save_settings(self) -> None:
         settings = self.settings_store.load()
@@ -99,7 +124,6 @@ class SettingsDialog(QDialog):
         self.settings_store.save(settings)
 
         for key, widget, delete_checkbox in (
-            ("openrouter.api_key", self.openrouter_key, self.delete_openrouter_key),
             ("openrouter.management_key", self.management_key, self.delete_management_key),
             ("deepseek.api_key", self.deepseek_key, self.delete_deepseek_key),
         ):
@@ -117,18 +141,14 @@ class SettingsDialog(QDialog):
         temp_store = FakeSecretStore()
         pending = []
 
-        openrouter_key = self.openrouter_key.text().strip()
         management_key = self.management_key.text().strip()
         deepseek_key = self.deepseek_key.text().strip()
 
-        if openrouter_key:
-            temp_store.set("openrouter.api_key", openrouter_key)
-            if management_key:
-                temp_store.set("openrouter.management_key", management_key)
+        if management_key:
+            temp_store.set("openrouter.management_key", management_key)
             worker = ConnectionTestWorker(
                 OpenRouterCollector(secret_store=temp_store),
                 "OpenRouter",
-                temp_store,
             )
             worker.signals.finished.connect(self._handle_test_result)
             pending.append(worker)
@@ -138,13 +158,12 @@ class SettingsDialog(QDialog):
             worker = ConnectionTestWorker(
                 DeepSeekCollector(secret_store=temp_store),
                 "DeepSeek",
-                temp_store,
             )
             worker.signals.finished.connect(self._handle_test_result)
             pending.append(worker)
 
         if not pending:
-            QMessageBox.information(self, "연결 테스트", "입력된 API 키가 없습니다.")
+            QMessageBox.information(self, "연결 테스트", "입력된 키가 없습니다.")
             return
 
         self.test_button.setEnabled(False)
