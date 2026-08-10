@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 import struct
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -19,10 +22,20 @@ from .base import Collector
 GROK_CONFIG_DIR = Path(r"C:\Users\sswce\.grok")
 GROK_AUTH_PATH = GROK_CONFIG_DIR / "auth.json"
 GROK_TIMEOUT_SECONDS = 10.0
+GROK_CLI_TIMEOUT_SECONDS = 30.0
+GROK_REFRESH_EARLY_SECONDS = 5 * 60
 GROK_CREDITS_CONFIG_ENDPOINT = (
     "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 )
 GROK_GRPC_WEB_REQUEST = b"\x00\x00\x00\x00\x00"
+
+
+@dataclass(frozen=True)
+class _GrokAuth:
+    bearer_token: str | None
+    expires_at: datetime | None
+    has_refresh_token: bool
+
 
 @dataclass(frozen=True)
 class _GrokCreditsConfig:
@@ -39,8 +52,8 @@ class GrokCollector(Collector):
 
     def collect(self) -> UsageSnapshot:
         now = datetime.now(timezone.utc)
-        bearer_token = self._load_bearer_token()
-        if not bearer_token:
+        auth = self._load_auth()
+        if not auth.bearer_token:
             return self._snapshot(
                 status=ProviderStatus.AUTH_REQUIRED,
                 message=f"Grok 로그인 정보를 찾을 수 없습니다: {GROK_AUTH_PATH}",
@@ -48,22 +61,27 @@ class GrokCollector(Collector):
                 error_code="GROK_AUTH_NOT_CONFIGURED",
             )
 
-        headers = {
-            "Authorization": f"Bearer {bearer_token}",
-            "Accept": "application/grpc-web+proto",
-            "Content-Type": "application/grpc-web+proto",
-            "Connect-Protocol-Version": "1",
-            "X-Grpc-Web": "1",
-            "Origin": "https://grok.com",
-            "Referer": "https://grok.com/?_s=usage",
-        }
+        refresh_attempted = False
+        if self._auth_needs_refresh(auth, now):
+            refresh_attempted = True
+            if self._refresh_auth_with_cli():
+                refreshed_auth = self._load_auth()
+                if refreshed_auth.bearer_token:
+                    auth = refreshed_auth
+
         try:
             with httpx.Client(timeout=GROK_TIMEOUT_SECONDS) as client:
-                response = client.post(
-                    GROK_CREDITS_CONFIG_ENDPOINT,
-                    headers=headers,
-                    content=GROK_GRPC_WEB_REQUEST,
-                )
+                response = self._request_usage(client, auth.bearer_token)
+                if (
+                    response.status_code in {401, 403}
+                    and auth.has_refresh_token
+                    and not refresh_attempted
+                ):
+                    refresh_attempted = True
+                    if self._refresh_auth_with_cli():
+                        auth = self._load_auth()
+                        if auth.bearer_token:
+                            response = self._request_usage(client, auth.bearer_token)
         except httpx.TimeoutException:
             return self._snapshot(
                 status=ProviderStatus.ERROR,
@@ -82,9 +100,13 @@ class GrokCollector(Collector):
         if response.status_code in {401, 403}:
             return self._snapshot(
                 status=ProviderStatus.AUTH_REQUIRED,
-                message="Grok 인증이 만료되었습니다. Grok에 다시 로그인해 주세요.",
+                message=(
+                    "Grok 인증 자동 갱신에 실패했습니다. Grok에 다시 로그인해 주세요."
+                    if refresh_attempted
+                    else "Grok 인증이 만료되었습니다. Grok에 다시 로그인해 주세요."
+                ),
                 collected_at=now,
-                error_code="AUTH_FAILED",
+                error_code="AUTH_REFRESH_FAILED" if refresh_attempted else "AUTH_FAILED",
             )
         if response.status_code == 429:
             return self._snapshot(
@@ -128,13 +150,29 @@ class GrokCollector(Collector):
         )
 
     @staticmethod
-    def _load_bearer_token() -> str | None:
+    def _request_usage(client: httpx.Client, bearer_token: str) -> httpx.Response:
+        return client.post(
+            GROK_CREDITS_CONFIG_ENDPOINT,
+            headers={
+                "Authorization": f"Bearer {bearer_token}",
+                "Accept": "application/grpc-web+proto",
+                "Content-Type": "application/grpc-web+proto",
+                "Connect-Protocol-Version": "1",
+                "X-Grpc-Web": "1",
+                "Origin": "https://grok.com",
+                "Referer": "https://grok.com/?_s=usage",
+            },
+            content=GROK_GRPC_WEB_REQUEST,
+        )
+
+    @classmethod
+    def _load_auth(cls) -> _GrokAuth:
         if not GROK_AUTH_PATH.is_file():
-            return None
+            return _GrokAuth(None, None, False)
         try:
             raw = GROK_AUTH_PATH.read_text(encoding="utf-8")
         except OSError:
-            return None
+            return _GrokAuth(None, None, False)
 
         # Current Grok CLI auth.json stores the account object under an issuer key;
         # older versions stored the key at the root. Support both formats.
@@ -142,13 +180,90 @@ class GrokCollector(Collector):
             payload = json.loads(raw)
         except json.JSONDecodeError:
             payload = None
-        token = GrokCollector._find_string_value(payload, "key")
-        if token:
-            return token.strip()
+
+        account = cls._find_auth_account(payload)
+        if account is not None:
+            token = account.get("key")
+            expires_at = cls._parse_auth_datetime(account.get("expires_at"))
+            refresh_token = account.get("refresh_token")
+            return _GrokAuth(
+                bearer_token=token.strip() if isinstance(token, str) and token.strip() else None,
+                expires_at=expires_at,
+                has_refresh_token=isinstance(refresh_token, str) and bool(refresh_token.strip()),
+            )
 
         # Keep compatibility with occasionally malformed auth files.
         match = re.search(r'"key"\s*:\s*"([^"\r\n]+)"', raw)
-        return match.group(1).strip() if match else None
+        return _GrokAuth(match.group(1).strip() if match else None, None, False)
+
+    @classmethod
+    def _load_bearer_token(cls) -> str | None:
+        return cls._load_auth().bearer_token
+
+    @staticmethod
+    def _auth_needs_refresh(auth: _GrokAuth, now: datetime) -> bool:
+        if not auth.has_refresh_token or auth.expires_at is None:
+            return False
+        return auth.expires_at <= now + timedelta(seconds=GROK_REFRESH_EARLY_SECONDS)
+
+    @staticmethod
+    def _refresh_auth_with_cli() -> bool:
+        command = shutil.which("grok")
+        if command is None:
+            fallback_name = "grok.exe" if os.name == "nt" else "grok"
+            fallback = GROK_CONFIG_DIR / "bin" / fallback_name
+            if fallback.is_file():
+                command = str(fallback)
+        if command is None:
+            return False
+
+        creation_flags = 0
+        if os.name == "nt":
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        environment = os.environ.copy()
+        environment["GROK_HOME"] = str(GROK_CONFIG_DIR)
+        try:
+            completed = subprocess.run(
+                [command, "models"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=GROK_CLI_TIMEOUT_SECONDS,
+                check=False,
+                creationflags=creation_flags,
+                env=environment,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return completed.returncode == 0
+
+    @classmethod
+    def _find_auth_account(cls, value: object) -> dict[str, object] | None:
+        if isinstance(value, dict):
+            if isinstance(value.get("key"), str):
+                return value
+            for child in value.values():
+                found = cls._find_auth_account(child)
+                if found is not None:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = cls._find_auth_account(child)
+                if found is not None:
+                    return found
+        return None
+
+    @staticmethod
+    def _parse_auth_datetime(value: object) -> datetime | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     @classmethod
     def _parse_credits_config(cls, body: bytes) -> _GrokCreditsConfig:
@@ -285,23 +400,6 @@ class GrokCollector(Collector):
     @staticmethod
     def _clamp_percent(value: Decimal) -> Decimal:
         return max(Decimal("0"), min(Decimal("100"), value))
-
-    @classmethod
-    def _find_string_value(cls, value: object, key: str) -> str | None:
-        if isinstance(value, dict):
-            found = value.get(key)
-            if isinstance(found, str) and found.strip():
-                return found
-            for child in value.values():
-                result = cls._find_string_value(child, key)
-                if result:
-                    return result
-        elif isinstance(value, list):
-            for child in value:
-                result = cls._find_string_value(child, key)
-                if result:
-                    return result
-        return None
 
     def _snapshot(
         self,

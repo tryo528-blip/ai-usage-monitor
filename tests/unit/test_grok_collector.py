@@ -1,7 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
+import httpx
 import respx
 
 from ai_usage_monitor.collectors import grok as grok_module
@@ -27,13 +30,26 @@ GROK_CREDITS_RESPONSE = bytes.fromhex(
 )
 
 
-def _auth_file(tmp_path, monkeypatch) -> None:
+def _auth_file(
+    tmp_path,
+    monkeypatch,
+    *,
+    token: str = "test-bearer-token",
+    expires_at: datetime | None = None,
+    refresh_token: str | None = None,
+):
     auth_path = tmp_path / "auth.json"
+    account: dict[str, object] = {"key": token}
+    if expires_at is not None:
+        account["expires_at"] = expires_at.isoformat().replace("+00:00", "Z")
+    if refresh_token is not None:
+        account["refresh_token"] = refresh_token
     auth_path.write_text(
-        '{"https://auth.x.ai::account": {"key": "test-bearer-token"}}',
+        json.dumps({"https://auth.x.ai::account": account}),
         encoding="utf-8",
     )
     monkeypatch.setattr(grok_module, "GROK_AUTH_PATH", auth_path)
+    return auth_path
 
 
 def test_grok_collector_uses_supergrok_weekly_grpc_endpoint(tmp_path, monkeypatch) -> None:
@@ -58,6 +74,8 @@ def test_grok_collector_uses_supergrok_weekly_grpc_endpoint(tmp_path, monkeypatc
     assert snapshot.quota_windows[0].resets_at == datetime(
         2026, 8, 11, 0, 20, 19, 869637, tzinfo=timezone.utc
     )
+
+
 def test_grok_credits_parser_reads_overall_percent_and_ignores_grpc_trailer() -> None:
     config = GrokCollector._parse_credits_config(GROK_CREDITS_RESPONSE)
 
@@ -77,7 +95,132 @@ def test_grok_collector_requires_fixed_auth_file(tmp_path, monkeypatch) -> None:
     assert snapshot.error_code == "GROK_AUTH_NOT_CONFIGURED"
 
 
-def test_grok_collector_surfaces_expired_auth(tmp_path, monkeypatch) -> None:
+def test_grok_collector_refreshes_expired_auth_before_usage(tmp_path, monkeypatch) -> None:
+    auth_path = _auth_file(
+        tmp_path,
+        monkeypatch,
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        refresh_token="test-refresh-token",
+    )
+    collector = GrokCollector()
+    refresh_calls = 0
+
+    def refresh_auth() -> bool:
+        nonlocal refresh_calls
+        refresh_calls += 1
+        auth_path.write_text(
+            json.dumps(
+                {
+                    "https://auth.x.ai::account": {
+                        "key": "refreshed-bearer-token",
+                        "expires_at": (
+                            datetime.now(timezone.utc) + timedelta(hours=6)
+                        ).isoformat(),
+                        "refresh_token": "rotated-refresh-token",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return True
+
+    monkeypatch.setattr(collector, "_refresh_auth_with_cli", refresh_auth)
+
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post(GROK_CREDITS_CONFIG_ENDPOINT).respond(
+            200,
+            content=GROK_CREDITS_RESPONSE,
+        )
+        snapshot = collector.collect()
+
+    assert refresh_calls == 1
+    assert route.calls[0].request.headers["Authorization"] == "Bearer refreshed-bearer-token"
+    assert snapshot.status == ProviderStatus.OK
+
+
+def test_grok_collector_refreshes_and_retries_after_401(tmp_path, monkeypatch) -> None:
+    auth_path = _auth_file(
+        tmp_path,
+        monkeypatch,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=2),
+        refresh_token="test-refresh-token",
+    )
+    collector = GrokCollector()
+
+    def refresh_auth() -> bool:
+        auth_path.write_text(
+            json.dumps(
+                {
+                    "https://auth.x.ai::account": {
+                        "key": "refreshed-bearer-token",
+                        "expires_at": (
+                            datetime.now(timezone.utc) + timedelta(hours=6)
+                        ).isoformat(),
+                        "refresh_token": "rotated-refresh-token",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        return True
+
+    monkeypatch.setattr(collector, "_refresh_auth_with_cli", refresh_auth)
+
+    def usage_response(request: httpx.Request) -> httpx.Response:
+        if request.headers["Authorization"] == "Bearer test-bearer-token":
+            return httpx.Response(401)
+        return httpx.Response(200, content=GROK_CREDITS_RESPONSE)
+
+    with respx.mock(assert_all_called=True) as mock:
+        route = mock.post(GROK_CREDITS_CONFIG_ENDPOINT).mock(side_effect=usage_response)
+        snapshot = collector.collect()
+
+    assert route.call_count == 2
+    assert route.calls[1].request.headers["Authorization"] == "Bearer refreshed-bearer-token"
+    assert snapshot.status == ProviderStatus.OK
+
+
+def test_grok_collector_reports_failed_automatic_refresh(tmp_path, monkeypatch) -> None:
+    _auth_file(
+        tmp_path,
+        monkeypatch,
+        expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+        refresh_token="test-refresh-token",
+    )
+    collector = GrokCollector()
+    monkeypatch.setattr(collector, "_refresh_auth_with_cli", lambda: False)
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.post(GROK_CREDITS_CONFIG_ENDPOINT).respond(401)
+        snapshot = collector.collect()
+
+    assert snapshot.status == ProviderStatus.AUTH_REQUIRED
+    assert snapshot.error_code == "AUTH_REFRESH_FAILED"
+
+
+def test_grok_auth_refresh_runs_official_cli_headlessly(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(grok_module.shutil, "which", lambda command: "grok-test.exe")
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured.update(kwargs)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(grok_module.subprocess, "run", run)
+
+    assert GrokCollector._refresh_auth_with_cli() is True
+    assert captured["command"] == ["grok-test.exe", "models"]
+    assert captured["stdin"] == grok_module.subprocess.DEVNULL
+    assert captured["stdout"] == grok_module.subprocess.DEVNULL
+    assert captured["stderr"] == grok_module.subprocess.DEVNULL
+    assert captured["timeout"] == grok_module.GROK_CLI_TIMEOUT_SECONDS
+    assert captured["env"]["GROK_HOME"] == str(grok_module.GROK_CONFIG_DIR)
+
+
+def test_grok_collector_surfaces_auth_failure_without_refresh_token(
+    tmp_path, monkeypatch
+) -> None:
     _auth_file(tmp_path, monkeypatch)
 
     with respx.mock(assert_all_called=True) as mock:
