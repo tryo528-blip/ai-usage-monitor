@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 
 from ai_usage_monitor.collectors import claude_bridge
@@ -43,54 +44,111 @@ def test_claude_usage_parses_terminal_decorated_lines() -> None:
     ]
 
 
-def test_claude_usage_runs_hidden_cli_with_fixed_config_path(monkeypatch, tmp_path) -> None:
+def _stub_candidates(monkeypatch, *paths: str) -> None:
+    monkeypatch.setattr(
+        ClaudeBridgeCollector,
+        "_claude_exe_candidates",
+        classmethod(lambda cls: list(paths)),
+    )
+
+
+def test_claude_usage_runs_cli_in_print_mode_and_reads_json_result(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
-    calls = []
+    _stub_candidates(monkeypatch, r"C:\fake\claude.exe")
+    calls: dict[str, object] = {}
 
-    class FakeProcess:
-        class ProcessChannelMode:
-            MergedChannels = object()
+    class Completed:
+        returncode = 0
+        stdout = json.dumps({"result": USAGE_OUTPUT}).encode()
+        stderr = b""
 
-        def setProgram(self, command):
-            calls.append(("program", command))
+    def fake_run(args, **kwargs):
+        calls["args"] = args
+        calls["env"] = kwargs.get("env")
+        calls["timeout"] = kwargs.get("timeout")
+        return Completed()
 
-        def setProcessEnvironment(self, environment):
-            calls.append(("environment", environment))
-
-        def setProcessChannelMode(self, mode):
-            calls.append(("channel_mode", mode))
-
-        def start(self):
-            calls.append(("start",))
-
-        def waitForStarted(self, timeout):
-            calls.append(("wait_started", timeout))
-            return True
-
-        def write(self, data):
-            calls.append(("write", data))
-
-        def closeWriteChannel(self):
-            calls.append(("close_write",))
-
-        def waitForFinished(self, timeout):
-            calls.append(("wait_finished", timeout))
-            return True
-
-        def exitCode(self):
-            return 0
-
-        def readAllStandardOutput(self):
-            return USAGE_OUTPUT.encode()
-
-    monkeypatch.setattr(claude_bridge, "QProcess", FakeProcess)
+    monkeypatch.setattr(claude_bridge.subprocess, "run", fake_run)
 
     output = ClaudeBridgeCollector._run_usage()
 
     assert "Current week" in output
-    assert ("program", "claude.cmd") in calls
-    assert ("write", b"/usage\n/exit\n") in calls
-    assert ("wait_finished", claude_bridge.USAGE_TIMEOUT_SECONDS * 1000) in calls
+    assert calls["args"] == [r"C:\fake\claude.exe", "-p", "/usage", "--output-format", "json"]
+    assert calls["env"]["CLAUDE_CONFIG_DIR"] == str(tmp_path)
+    assert calls["timeout"] == claude_bridge.USAGE_TIMEOUT_SECONDS
+
+
+def test_claude_usage_falls_through_to_next_candidate_when_one_fails(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
+    _stub_candidates(monkeypatch, r"C:\broken\claude.exe", r"C:\good\claude.exe")
+    attempted: list[str] = []
+
+    class Completed:
+        returncode = 0
+        stdout = json.dumps({"result": USAGE_OUTPUT}).encode()
+        stderr = b""
+
+    def fake_run(args, **kwargs):
+        attempted.append(args[0])
+        if args[0] == r"C:\broken\claude.exe":
+            raise OSError("[WinError 3] not found")
+        return Completed()
+
+    monkeypatch.setattr(claude_bridge.subprocess, "run", fake_run)
+
+    output = ClaudeBridgeCollector._run_usage()
+
+    assert "Current week" in output
+    assert attempted == [r"C:\broken\claude.exe", r"C:\good\claude.exe"]
+
+
+def test_claude_exe_candidates_include_msix_package_location(monkeypatch, tmp_path) -> None:
+    """Claude Code ships as an MSIX package, which redirects %APPDATA%.
+
+    Processes outside the package cannot see the unpackaged path, so the
+    packaged LocalCache location must be probed explicitly.
+    """
+    unpackaged = tmp_path / "AppData" / "Roaming" / "Claude" / "claude-code"
+    packaged = (
+        tmp_path
+        / "AppData"
+        / "Local"
+        / "Packages"
+        / "Claude_pzs8sxrjxfjjc"
+        / "LocalCache"
+        / "Roaming"
+        / "Claude"
+        / "claude-code"
+        / "2.1.229"
+    )
+    packaged.mkdir(parents=True)
+    (packaged / "claude.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CODE_DIR", unpackaged)
+    monkeypatch.setattr(claude_bridge.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(claude_bridge.shutil, "which", lambda name: None)
+
+    candidates = ClaudeBridgeCollector._claude_exe_candidates()
+
+    assert str(packaged / "claude.exe") in candidates
+
+
+def test_claude_exe_candidates_prefer_newest_version_numerically(monkeypatch, tmp_path) -> None:
+    root = tmp_path / "claude-code"
+    for version in ("2.1.30", "2.1.229"):
+        version_dir = root / version
+        version_dir.mkdir(parents=True)
+        (version_dir / "claude.exe").write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CODE_DIR", root)
+    monkeypatch.setattr(claude_bridge.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(claude_bridge.shutil, "which", lambda name: None)
+
+    candidates = ClaudeBridgeCollector._claude_exe_candidates()
+
+    assert candidates[0] == str(root / "2.1.229" / "claude.exe")
 
 
 def test_claude_usage_reports_missing_fixed_config_path(monkeypatch, tmp_path) -> None:

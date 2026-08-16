@@ -1,19 +1,21 @@
 from __future__ import annotations
 
+import json
 import os
 import re
+import shutil
+import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
-
-from PySide6.QtCore import QProcess, QProcessEnvironment
 
 from ai_usage_monitor.domain.enums import ProviderStatus, SourceType
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
 
 from .base import Collector
 
-CLAUDE_CONFIG_DIR = Path(r"C:\Users\sswce\.claude")
+CLAUDE_CONFIG_DIR = Path.home() / ".claude"
+CLAUDE_CODE_DIR = Path.home() / "AppData" / "Roaming" / "Claude" / "claude-code"
 USAGE_TIMEOUT_SECONDS = 30
 USAGE_LINE_PATTERNS = {
     "five_hour": re.compile(r"Current session:\s*(?P<percent>\d+(?:\.\d+)?)%", re.IGNORECASE),
@@ -44,24 +46,24 @@ class ClaudeBridgeCollector(Collector):
 
         try:
             usage_output = self._run_usage()
-        except FileNotFoundError:
+        except FileNotFoundError as exc:
             return self._snapshot(
                 status=ProviderStatus.UNAVAILABLE,
-                message="Claude CLI를 찾을 수 없습니다.",
+                message=f"CLI 없음: {exc}",
                 collected_at=now,
                 error_code="CLAUDE_CLI_NOT_FOUND",
             )
-        except TimeoutError:
+        except (TimeoutError, subprocess.TimeoutExpired):
             return self._snapshot(
                 status=ProviderStatus.ERROR,
-                message="Claude 사용량 조회 시간이 초과되었습니다.",
+                message="시간 초과",
                 collected_at=now,
                 error_code="CLAUDE_USAGE_TIMEOUT",
             )
-        except RuntimeError as exc:
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             return self._snapshot(
                 status=ProviderStatus.ERROR,
-                message=f"Claude 사용량을 읽을 수 없습니다: {exc}",
+                message=f"조회 실패: {exc}",
                 collected_at=now,
                 error_code="CLAUDE_USAGE_ERROR",
             )
@@ -70,7 +72,7 @@ class ClaudeBridgeCollector(Collector):
         if not quota_windows:
             return self._snapshot(
                 status=ProviderStatus.ERROR,
-                message="Claude /usage 결과에서 사용량을 찾을 수 없습니다.",
+                message="파싱 실패",
                 collected_at=now,
                 error_code="CLAUDE_USAGE_PARSE_ERROR",
             )
@@ -84,31 +86,136 @@ class ClaudeBridgeCollector(Collector):
         )
 
     @staticmethod
-    def _run_usage() -> str:
-        command = "claude.cmd" if os.name == "nt" else "claude"
-        environment = QProcessEnvironment.systemEnvironment()
-        environment.insert("CLAUDE_CONFIG_DIR", str(CLAUDE_CONFIG_DIR))
-        process = QProcess()
-        process.setProgram(command)
-        process.setProcessEnvironment(environment)
-        process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
-        process.start()
-        if not process.waitForStarted(5000):
-            raise FileNotFoundError(command)
-        process.write(b"/usage\n/exit\n")
-        process.closeWriteChannel()
-        if not process.waitForFinished(USAGE_TIMEOUT_SECONDS * 1000):
-            process.kill()
-            process.waitForFinished(1000)
-            raise TimeoutError(f"timeout after {USAGE_TIMEOUT_SECONDS} seconds")
-        if process.exitCode() != 0:
-            raise RuntimeError(f"exit code {process.exitCode()}")
-        return bytes(process.readAllStandardOutput()).decode("utf-8", errors="replace")
+    def _version_sort_key(path: Path) -> tuple:
+        parts = []
+        for chunk in path.name.split("."):
+            parts.append(int(chunk) if chunk.isdigit() else -1)
+        return tuple(parts)
+
+    @staticmethod
+    def _claude_code_roots() -> list[Path]:
+        """Directories holding per-version Claude Code installs.
+
+        Claude Code ships as an MSIX package, which redirects %APPDATA% into the
+        package's LocalCache. That redirected copy is invisible to processes
+        running outside the package, so the packaged location must be probed
+        explicitly rather than relying on %APPDATA%.
+        """
+        roots = [CLAUDE_CODE_DIR]
+        packages = Path.home() / "AppData" / "Local" / "Packages"
+        try:
+            for package in sorted(packages.glob("Claude_*")):
+                roots.append(package / "LocalCache" / "Roaming" / "Claude" / "claude-code")
+        except OSError:
+            pass
+        return roots
+
+    @classmethod
+    def _claude_exe_candidates(cls) -> list[str]:
+        """Every plausible claude executable, best first. Never raises."""
+        candidates: list[str] = []
+
+        def add(value: str | None) -> None:
+            if value and value not in candidates:
+                candidates.append(value)
+
+        for name in ("claude.cmd", "claude.exe", "claude"):
+            add(shutil.which(name))
+
+        for root in cls._claude_code_roots():
+            try:
+                version_dirs = sorted(
+                    (p for p in root.iterdir() if p.is_dir()),
+                    key=cls._version_sort_key,
+                    reverse=True,
+                )
+            except OSError:
+                continue
+            for version_dir in version_dirs:
+                for exe_name in ("claude.exe", "claude.cmd", "claude"):
+                    exe = version_dir / exe_name
+                    if exe.is_file():
+                        add(str(exe))
+
+        for extra in (
+            Path.home() / "AppData" / "Local" / "Programs" / "claude" / "claude.exe",
+            Path.home() / "AppData" / "Roaming" / "npm" / "claude.cmd",
+            Path.home() / ".claude" / "bin" / "claude.exe",
+            Path.home() / ".local" / "bin" / "claude.exe",
+        ):
+            if extra.is_file():
+                add(str(extra))
+
+        return candidates
+
+    @staticmethod
+    def _lookup_diagnostics() -> str:
+        """Why did the search come up empty? Captured into the snapshot message."""
+        bits = [f"home={Path.home()}", f"APPDATA={os.environ.get('APPDATA')}"]
+        for root in ClaudeBridgeCollector._claude_code_roots():
+            try:
+                entries = [p.name for p in root.iterdir()]
+                bits.append(f"{root}={entries}")
+            except OSError as exc:
+                bits.append(f"{root}!{type(exc).__name__}")
+        bits.append(f"which={[shutil.which(n) for n in ('claude.cmd', 'claude.exe', 'claude')]}")
+        return " | ".join(bits)
+
+    @classmethod
+    def _run_usage(cls) -> str:
+        candidates = cls._claude_exe_candidates()
+        if not candidates:
+            raise FileNotFoundError(cls._lookup_diagnostics())
+
+        creation_flags = 0
+        if os.name == "nt":
+            creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        env = os.environ.copy()
+        env["CLAUDE_CONFIG_DIR"] = str(CLAUDE_CONFIG_DIR)
+        # PyInstaller injects these into its own env; leaking them into a child
+        # trips the bootloader's parent-process check if the child is frozen too.
+        for leaked in ("_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL", "_MEIPASS2"):
+            env.pop(leaked, None)
+
+        errors: list[str] = []
+        for command in candidates:
+            try:
+                completed = subprocess.run(
+                    [command, "-p", "/usage", "--output-format", "json"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=USAGE_TIMEOUT_SECONDS,
+                    check=False,
+                    creationflags=creation_flags,
+                    env=env,
+                    cwd=str(Path.home()),
+                )
+            except subprocess.TimeoutExpired:
+                raise
+            except OSError as exc:
+                errors.append(f"{Path(command).name}: {exc}")
+                continue
+
+            if completed.returncode != 0:
+                detail = completed.stderr.decode("utf-8", errors="replace").strip()
+                errors.append(f"{Path(command).name}: rc={completed.returncode} {detail[:120]}")
+                continue
+
+            raw = completed.stdout.decode("utf-8", errors="replace")
+            try:
+                data = json.loads(raw)
+                result = data.get("result")
+            except (json.JSONDecodeError, AttributeError):
+                result = None
+            return result if isinstance(result, str) and result else raw
+
+        raise RuntimeError("; ".join(errors) or "알 수 없는 실패")
 
     @classmethod
     def _parse_usage(cls, output: str | None, *, now: datetime) -> list[QuotaWindow]:
         quotas: list[QuotaWindow] = []
-        normalized = re.sub(r"\s+", " ", cls._strip_terminal_control(output or "")).strip()
+        normalized = re.sub(r"\s+", " ", (output or "")).strip()
         for key, pattern in USAGE_LINE_PATTERNS.items():
             match = pattern.search(normalized)
             if not match:
@@ -133,12 +240,6 @@ class ClaudeBridgeCollector(Collector):
                 )
             )
         return quotas
-
-    @staticmethod
-    def _strip_terminal_control(value: str) -> str:
-        value = re.sub(r"\x1b\][^\x07]*(?:\x07|\x1b\\)", "", value)
-        value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
-        return value.replace("\r", "")
 
     @staticmethod
     def _parse_reset(value: str, zone_name: str, *, now: datetime) -> datetime | None:

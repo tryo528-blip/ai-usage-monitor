@@ -19,7 +19,7 @@ from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
 
 from .base import Collector
 
-GROK_CONFIG_DIR = Path(r"C:\Users\sswce\.grok")
+GROK_CONFIG_DIR = Path.home() / ".grok"
 GROK_AUTH_PATH = GROK_CONFIG_DIR / "auth.json"
 GROK_TIMEOUT_SECONDS = 10.0
 GROK_CLI_TIMEOUT_SECONDS = 30.0

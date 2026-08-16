@@ -167,17 +167,14 @@ class ProviderCard(QFrame):
 
     def _format_quota(self, snapshot: UsageSnapshot) -> str | None:
         quotas = {key: self._find_quota(snapshot, key) for key, _ in self.quota_fields}
-        if "five_hour" in quotas and any(
-            quotas[key] is not None and quotas[key].used_percent is not None
-            for key in ("five_hour", "weekly")
-        ):
-            return self._format_compact_percent_quota(quotas.get("five_hour"), quotas.get("weekly"))
-
         parts: list[str] = []
         for key, label in self.quota_fields:
             quota = quotas[key]
             if quota is None:
                 parts.append(self._format_missing_quota(snapshot, key, label))
+                continue
+            if quota.used_percent is not None:
+                parts.append(f"{self._format_remaining_percent(quota.used_percent)}%")
                 continue
             value = self._format_quota_value(quota, label)
             if value is None:
@@ -185,19 +182,6 @@ class ProviderCard(QFrame):
                 continue
             parts.append(value.replace(" \ub0a8\uc74c", "").replace("5H ", ""))
         return " / ".join(parts) if parts else None
-
-    @classmethod
-    def _format_compact_percent_quota(
-        cls, five_hour: QuotaWindow | None, weekly: QuotaWindow | None
-    ) -> str | None:
-        if five_hour is None and weekly is None:
-            return None
-        parts: list[str] = []
-        if five_hour is not None and five_hour.used_percent is not None:
-            parts.append(f"{cls._format_remaining_percent(five_hour.used_percent)}%")
-        if weekly is not None and weekly.used_percent is not None:
-            parts.append(f"{cls._format_remaining_percent(weekly.used_percent)}%")
-        return " / ".join(parts) or None
 
     @staticmethod
     def _format_missing_quota(snapshot: UsageSnapshot, key: str, label: str) -> str:

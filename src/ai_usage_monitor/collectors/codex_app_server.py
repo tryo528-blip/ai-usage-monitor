@@ -13,7 +13,7 @@ from .base import Collector
 class CodexAppServerCollector(Collector):
     provider_id = "codex"
     provider_name = "Codex"
-    CODEX_SESSIONS_DIR = Path(r"C:\Users\sswce\.codex\sessions")
+    CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 
     def is_configured(self) -> bool:
         return self.CODEX_SESSIONS_DIR.is_dir()
@@ -76,37 +76,31 @@ class CodexAppServerCollector(Collector):
 
     @staticmethod
     def _parse_rate_limits(rate_limits: dict[str, object]) -> list[QuotaWindow]:
-        quotas: list[QuotaWindow] = []
-        for value in (rate_limits.get("primary"), rate_limits.get("secondary")):
-            if not isinstance(value, dict):
-                continue
-            window_minutes = value.get("window_minutes")
-            used_percent = value.get("used_percent")
-            if not isinstance(window_minutes, int) or not isinstance(used_percent, (int, float)):
-                continue
-            if window_minutes == 300:
-                key, label = "five_hour", "5시간 사용량"
-            elif window_minutes == 10080:
-                key, label = "weekly", "주간 사용량"
-            else:
-                continue
-            reset_value = value.get("resets_at")
-            reset_at = (
-                datetime.fromtimestamp(reset_value, tz=timezone.utc)
-                if isinstance(reset_value, (int, float))
-                else None
+        value = rate_limits.get("primary")
+        if not isinstance(value, dict):
+            return []
+        window_minutes = value.get("window_minutes")
+        used_percent = value.get("used_percent")
+        if not isinstance(window_minutes, int) or not isinstance(used_percent, (int, float)):
+            return []
+        if window_minutes != 10080:
+            return []
+        reset_value = value.get("resets_at")
+        reset_at = (
+            datetime.fromtimestamp(reset_value, tz=timezone.utc)
+            if isinstance(reset_value, (int, float))
+            else None
+        )
+        return [
+            QuotaWindow(
+                key="weekly",
+                label="주간 사용량",
+                used_percent=float(used_percent),
+                unit="percent",
+                window_minutes=window_minutes,
+                resets_at=reset_at,
             )
-            quotas.append(
-                QuotaWindow(
-                    key=key,
-                    label=label,
-                    used_percent=float(used_percent),
-                    unit="percent",
-                    window_minutes=window_minutes,
-                    resets_at=reset_at,
-                )
-            )
-        return quotas
+        ]
 
     def _snapshot(
         self,
