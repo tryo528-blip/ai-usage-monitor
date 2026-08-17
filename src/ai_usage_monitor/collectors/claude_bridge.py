@@ -174,7 +174,13 @@ class ClaudeBridgeCollector(Collector):
         env["CLAUDE_CONFIG_DIR"] = str(CLAUDE_CONFIG_DIR)
         # PyInstaller injects these into its own env; leaking them into a child
         # trips the bootloader's parent-process check if the child is frozen too.
-        for leaked in ("_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE", "_PYI_PARENT_PROCESS_LEVEL", "_MEIPASS2"):
+        leaked_vars = (
+            "_PYI_APPLICATION_HOME_DIR",
+            "_PYI_ARCHIVE_FILE",
+            "_PYI_PARENT_PROCESS_LEVEL",
+            "_MEIPASS2",
+        )
+        for leaked in leaked_vars:
             env.pop(leaked, None)
 
         errors: list[str] = []
