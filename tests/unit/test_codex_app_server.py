@@ -7,9 +7,7 @@ from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
 from ai_usage_monitor.domain.enums import ProviderStatus
 
 
-def test_codex_collector_reports_weekly_only_and_ignores_spark_limit(
-    tmp_path, monkeypatch
-) -> None:
+def test_codex_collector_reports_weekly_only_and_ignores_spark_limit(tmp_path, monkeypatch) -> None:
     """The secondary (spark model) window is deliberately not surfaced."""
     session_path = tmp_path / "2026" / "08" / "05" / "session.jsonl"
     session_path.parent.mkdir(parents=True)

@@ -78,9 +78,7 @@ def test_claude_usage_runs_cli_in_print_mode_and_reads_json_result(monkeypatch, 
     assert calls["timeout"] == claude_bridge.USAGE_TIMEOUT_SECONDS
 
 
-def test_claude_usage_falls_through_to_next_candidate_when_one_fails(
-    monkeypatch, tmp_path
-) -> None:
+def test_claude_usage_falls_through_to_next_candidate_when_one_fails(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
     _stub_candidates(monkeypatch, r"C:\broken\claude.exe", r"C:\good\claude.exe")
     attempted: list[str] = []

@@ -80,9 +80,7 @@ def test_grok_credits_parser_reads_overall_percent_and_ignores_grpc_trailer() ->
     config = GrokCollector._parse_credits_config(GROK_CREDITS_RESPONSE)
 
     assert config.used_percent == 37
-    assert config.period_end == datetime(
-        2026, 8, 11, 0, 20, 19, 869637, tzinfo=timezone.utc
-    )
+    assert config.period_end == datetime(2026, 8, 11, 0, 20, 19, 869637, tzinfo=timezone.utc)
 
 
 def test_grok_collector_requires_fixed_auth_file(tmp_path, monkeypatch) -> None:
@@ -113,9 +111,7 @@ def test_grok_collector_refreshes_expired_auth_before_usage(tmp_path, monkeypatc
                 {
                     "https://auth.x.ai::account": {
                         "key": "refreshed-bearer-token",
-                        "expires_at": (
-                            datetime.now(timezone.utc) + timedelta(hours=6)
-                        ).isoformat(),
+                        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
                         "refresh_token": "rotated-refresh-token",
                     }
                 }
@@ -153,9 +149,7 @@ def test_grok_collector_refreshes_and_retries_after_401(tmp_path, monkeypatch) -
                 {
                     "https://auth.x.ai::account": {
                         "key": "refreshed-bearer-token",
-                        "expires_at": (
-                            datetime.now(timezone.utc) + timedelta(hours=6)
-                        ).isoformat(),
+                        "expires_at": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
                         "refresh_token": "rotated-refresh-token",
                     }
                 }
@@ -218,9 +212,7 @@ def test_grok_auth_refresh_runs_official_cli_headlessly(monkeypatch) -> None:
     assert captured["env"]["GROK_HOME"] == str(grok_module.GROK_CONFIG_DIR)
 
 
-def test_grok_collector_surfaces_auth_failure_without_refresh_token(
-    tmp_path, monkeypatch
-) -> None:
+def test_grok_collector_surfaces_auth_failure_without_refresh_token(tmp_path, monkeypatch) -> None:
     _auth_file(tmp_path, monkeypatch)
 
     with respx.mock(assert_all_called=True) as mock:

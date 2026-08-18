@@ -24,9 +24,7 @@ GROK_AUTH_PATH = GROK_CONFIG_DIR / "auth.json"
 GROK_TIMEOUT_SECONDS = 10.0
 GROK_CLI_TIMEOUT_SECONDS = 30.0
 GROK_REFRESH_EARLY_SECONDS = 5 * 60
-GROK_CREDITS_CONFIG_ENDPOINT = (
-    "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
-)
+GROK_CREDITS_CONFIG_ENDPOINT = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 GROK_GRPC_WEB_REQUEST = b"\x00\x00\x00\x00\x00"
 
 
