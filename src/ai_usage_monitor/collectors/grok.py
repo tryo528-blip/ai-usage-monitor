@@ -24,9 +24,7 @@ GROK_AUTH_PATH = GROK_CONFIG_DIR / "auth.json"
 GROK_TIMEOUT_SECONDS = 10.0
 GROK_CLI_TIMEOUT_SECONDS = 30.0
 GROK_REFRESH_EARLY_SECONDS = 5 * 60
-GROK_CREDITS_CONFIG_ENDPOINT = (
-    "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
-)
+GROK_CREDITS_CONFIG_ENDPOINT = "https://grok.com/grok_api_v2.GrokBuildBilling/GetGrokCreditsConfig"
 GROK_GRPC_WEB_REQUEST = b"\x00\x00\x00\x00\x00"
 
 
@@ -281,9 +279,11 @@ class GrokCollector(Collector):
             raise ValueError("Missing Grok credits config message")
 
         fields = list(cls._parse_proto_fields(config_payload))
+        # proto3 omits fixed32 fields left at their zero default, so a missing
+        # field 1 means 0% used rather than a parse failure.
         used_percent = cls._first_fixed32_decimal(fields, 1)
         if used_percent is None:
-            raise ValueError("Missing Grok usage percentage")
+            used_percent = Decimal("0")
 
         period_end = cls._first_timestamp(fields, 5)
 
