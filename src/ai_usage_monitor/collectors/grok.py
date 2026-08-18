@@ -281,9 +281,11 @@ class GrokCollector(Collector):
             raise ValueError("Missing Grok credits config message")
 
         fields = list(cls._parse_proto_fields(config_payload))
+        # proto3 omits fixed32 fields left at their zero default, so a missing
+        # field 1 means 0% used rather than a parse failure.
         used_percent = cls._first_fixed32_decimal(fields, 1)
         if used_percent is None:
-            raise ValueError("Missing Grok usage percentage")
+            used_percent = Decimal("0")
 
         period_end = cls._first_timestamp(fields, 5)
 
