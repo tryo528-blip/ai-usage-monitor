@@ -48,6 +48,7 @@ class SettingsDialog(QDialog):
         self,
         secret_store: SecretStore | None = None,
         settings_store: SettingsStore | None = None,
+        show_claude_auth: bool = True,
     ) -> None:
         super().__init__()
         self.setWindowTitle("설정")
@@ -84,6 +85,8 @@ class SettingsDialog(QDialog):
         self.grok_auth_button = QPushButton("Grok 인증")
         auth_buttons.addWidget(self.claude_auth_button)
         auth_buttons.addWidget(self.grok_auth_button)
+        if not show_claude_auth:
+            self.claude_auth_button.hide()
         layout.addLayout(auth_buttons)
         layout.addWidget(self.auto_refresh)
         layout.addWidget(self.start_on_launch)

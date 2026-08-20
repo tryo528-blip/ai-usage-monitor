@@ -28,6 +28,29 @@ from ai_usage_monitor.services.status_policy import determine_status
 from .provider_card import ProviderCard
 from .settings_dialog import SettingsDialog
 
+# Claude collector and card code stay in the repo. Flip this to show Claude again.
+SHOW_CLAUDE_IN_UI = False
+
+_CARD_WIDTH = 38
+_CARD_HEIGHT = 148
+_CARD_SPACING = 6
+_MARGIN_X = 6
+_WINDOW_HEIGHT = 206
+_REFRESH_WIDTH = 66
+_SIDE_EXTRA = 6
+_TITLE_ROW_HEIGHT = 22
+
+
+def _is_claude_card(key: str) -> bool:
+    return key == "claude" or key.startswith("claude_")
+
+
+def _window_width(card_count: int) -> int:
+    if card_count <= 0:
+        return 2 * _MARGIN_X + 2 * _SIDE_EXTRA
+    row = card_count * _CARD_WIDTH + (card_count - 1) * _CARD_SPACING
+    return row + 2 * _MARGIN_X + 2 * _SIDE_EXTRA
+
 
 class MainWindow(QMainWindow):
     def __init__(
@@ -43,7 +66,6 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AI Usage Monitor")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setFixedSize(270, 210)
         self._set_font_10()
         self._drag_position: QPoint | None = None
 
@@ -68,9 +90,9 @@ class MainWindow(QMainWindow):
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
 
-        if event.position().y() <= 36 and self.childAt(event.position().toPoint()) not in (
-            self.refresh_button,
-            self.settings_button,
+        if event.position().y() <= _TITLE_ROW_HEIGHT + 6 and self.childAt(
+            event.position().toPoint()
+        ) not in (
             self.minimize_button,
             self.close_button,
         ):
@@ -97,43 +119,51 @@ class MainWindow(QMainWindow):
         root.setFont(self.font())
         root.setStyleSheet("#app_frame { background-color: #ffffff; border: 1px solid #000000; }")
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(6, 4, 6, 6)
+        layout.setContentsMargins(_MARGIN_X, 3, _MARGIN_X, 4)
         layout.setSpacing(2)
 
-        top_bar = QHBoxLayout()
-        top_bar.setSpacing(4)
-        title = QLabel("남은 사용량")
-        self.refresh_button = QPushButton("새로고침")
-        self.settings_button = QPushButton("설정")
+        title_row = QHBoxLayout()
+        title_row.setSpacing(2)
+        self.title_label = QLabel("남은 사용량")
+        title_font = QFont(self.font())
+        title_font.setPointSize(8)
+        self.title_label.setFont(title_font)
         self.minimize_button = QPushButton("—")
         self.close_button = QPushButton("×")
         button_font = QFont(self.font())
         button_font.setPointSize(8)
-        self.refresh_button.setFont(button_font)
-        self.settings_button.setFont(button_font)
         self.minimize_button.setFont(button_font)
         self.close_button.setFont(button_font)
-        self.refresh_button.setFixedSize(54, 24)
-        self.settings_button.setFixedSize(42, 24)
-        self.minimize_button.setFixedSize(24, 24)
-        self.close_button.setFixedSize(24, 24)
-        self.refresh_button.setToolTip("새로고침")
-        self.settings_button.setToolTip("설정")
+        self.minimize_button.setFixedSize(20, _TITLE_ROW_HEIGHT)
+        self.close_button.setFixedSize(20, _TITLE_ROW_HEIGHT)
         self.minimize_button.setToolTip("최소화")
         self.close_button.setToolTip("닫기")
         self.minimize_button.setFlat(True)
         self.close_button.setFlat(True)
         self.close_button.setStyleSheet("QPushButton { color: #c62828; font-weight: bold; }")
-        top_bar.addWidget(title)
-        top_bar.addStretch(1)
-        top_bar.addWidget(self.refresh_button)
-        top_bar.addWidget(self.settings_button)
-        top_bar.addWidget(self.minimize_button)
-        top_bar.addWidget(self.close_button)
-        layout.addLayout(top_bar)
+        title_row.addWidget(self.title_label)
+        title_row.addStretch(1)
+        title_row.addWidget(self.minimize_button)
+        title_row.addWidget(self.close_button)
+        layout.addLayout(title_row)
+
+        action_row = QHBoxLayout()
+        action_row.setSpacing(4)
+        self.refresh_button = QPushButton("새로고침")
+        self.settings_button = QPushButton("설정")
+        self.refresh_button.setFont(button_font)
+        self.settings_button.setFont(button_font)
+        self.refresh_button.setFixedSize(_REFRESH_WIDTH, _TITLE_ROW_HEIGHT)
+        self.settings_button.setFixedSize(40, _TITLE_ROW_HEIGHT)
+        self.refresh_button.setToolTip("새로고침")
+        self.settings_button.setToolTip("설정")
+        action_row.addWidget(self.refresh_button)
+        action_row.addWidget(self.settings_button)
+        action_row.addStretch(1)
+        layout.addLayout(action_row)
 
         rows_layout = QHBoxLayout()
-        rows_layout.setSpacing(6)
+        rows_layout.setSpacing(_CARD_SPACING)
         rows_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cards = {
             "claude": ProviderCard(
@@ -183,21 +213,30 @@ class MainWindow(QMainWindow):
         self.cards["grok"].title_label.setText("Grok")
         self.cards["openrouter"].title_label.setText("O.R")
         self.cards["deepseek"].title_label.setText("DSeek")
-        for card in self.cards.values():
-            rows_layout.addWidget(card)
+        visible_count = 0
+        for key, card in self.cards.items():
+            card.setFixedSize(_CARD_WIDTH, _CARD_HEIGHT)
+            if SHOW_CLAUDE_IN_UI or not _is_claude_card(key):
+                rows_layout.addWidget(card)
+                visible_count += 1
         layout.addLayout(rows_layout)
 
         self.setCentralWidget(root)
+        self.setFixedSize(_window_width(visible_count), _WINDOW_HEIGHT)
 
     def _build_collectors(self, *, collector_manager: CollectorManager | None = None) -> None:
         if collector_manager is None:
-            collectors = [
-                ClaudeBridgeCollector(),
-                CodexAppServerCollector(),
-                GrokCollector(),
-                OpenRouterCollector(secret_store=self.secret_store),
-                DeepSeekCollector(secret_store=self.secret_store),
-            ]
+            collectors = []
+            if SHOW_CLAUDE_IN_UI:
+                collectors.append(ClaudeBridgeCollector())
+            collectors.extend(
+                [
+                    CodexAppServerCollector(),
+                    GrokCollector(),
+                    OpenRouterCollector(secret_store=self.secret_store),
+                    DeepSeekCollector(secret_store=self.secret_store),
+                ]
+            )
             collector_manager = CollectorManager(collectors)
         self.collector_manager = collector_manager
         self.collector_manager.register_callback(self._handle_result)
@@ -216,12 +255,17 @@ class MainWindow(QMainWindow):
             self.refresh_timer.stop()
 
     def refresh_all(self) -> None:
-        for card in self.cards.values():
-            card.set_loading()
+        for key, card in self.cards.items():
+            if SHOW_CLAUDE_IN_UI or not _is_claude_card(key):
+                card.set_loading()
         self.collector_manager.refresh()
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(secret_store=self.secret_store, settings_store=self.settings_store)
+        dialog = SettingsDialog(
+            secret_store=self.secret_store,
+            settings_store=self.settings_store,
+            show_claude_auth=SHOW_CLAUDE_IN_UI,
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._apply_settings()
 
