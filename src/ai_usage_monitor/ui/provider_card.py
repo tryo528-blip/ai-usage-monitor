@@ -17,7 +17,7 @@ class VerticalUsageBar(QWidget):
         self.color = QColor(color)
         self.light_color = QColor(light_color)
         self.remaining = 0.0
-        self.setFixedSize(28, 100)
+        self.setFixedSize(26, 88)
 
     def set_remaining(self, value: float | None) -> None:
         self.remaining = max(0.0, min(100.0, value or 0.0))
@@ -60,7 +60,7 @@ class ProviderCard(QFrame):
         super().__init__()
         self.summary_type = summary_type
         self.quota_fields = quota_fields
-        self.setFixedSize(38, 162)
+        self.setFixedSize(38, 148)
         self.setFrameStyle(QFrame.Shape.NoFrame)
 
         layout = QVBoxLayout(self)

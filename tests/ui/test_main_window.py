@@ -53,19 +53,33 @@ def test_main_window_builds_cards(qtbot, tmp_path) -> None:
         startup_refresh=False,
     )
     qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
     titles = [card.title_label.text() for card in window.cards.values()]
     assert titles == ["CLD-W", "CLD-5", "CDX", "Grok", "O.R", "DSeek"]
+    visible_titles = [
+        card.title_label.text() for card in window.cards.values() if card.parent() is not None
+    ]
+    assert visible_titles == ["CDX", "Grok", "O.R", "DSeek"]
     assert window.cards["claude"].quota_fields == (("weekly", "\uc8fc\uac04 \uc0ac\uc6a9\ub7c9"),)
     assert window.cards["claude_5h"].quota_fields == (
         ("five_hour", "5\uc2dc\uac04 \uc0ac\uc6a9\ub7c9"),
     )
     assert window.cards["codex"].quota_fields == (("weekly", "\uc8fc\uac04 \uc0ac\uc6a9\ub7c9"),)
-    assert window.size().width() == 270
-    assert window.size().height() == 210
-    assert window.refresh_button.size().width() == 54
-    assert window.settings_button.size().width() == 42
-    assert window.refresh_button.size().height() == 24
+    assert [collector.provider_id for collector in window.collector_manager.collectors] == [
+        "codex",
+        "grok",
+        "openrouter",
+        "deepseek",
+    ]
+    assert window.size().width() == 194
+    assert window.size().height() == 206
+    assert window.refresh_button.size().width() == 66
+    assert window.settings_button.size().width() == 40
+    assert window.refresh_button.size().height() == 22
     assert window.refresh_button.font().pointSize() == 8
+    assert window.refresh_button.y() > window.title_label.y()
+    assert window.settings_button.y() == window.refresh_button.y()
 
 
 def test_main_window_refreshes_card_applies_policy_and_saves_sqlite(qtbot, tmp_path) -> None:
@@ -153,3 +167,16 @@ def test_settings_dialog_exposes_claude_and_grok_auth_buttons(qtbot, monkeypatch
         ("Claude", "claude", ["auth", "login"]),
         ("Grok", "grok", ["login"]),
     ]
+
+
+def test_settings_dialog_hides_claude_auth_when_disabled(qtbot) -> None:
+    QApplication.instance() or QApplication([])
+    dialog = SettingsDialog(
+        secret_store=FakeSecretStore(),
+        settings_store=SettingsStore(),
+        show_claude_auth=False,
+    )
+    qtbot.addWidget(dialog)
+
+    assert dialog.claude_auth_button.isHidden()
+    assert not dialog.grok_auth_button.isHidden()
