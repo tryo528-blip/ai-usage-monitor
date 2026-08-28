@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 from datetime import timedelta, timezone
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
+
+_MISSING_KEY_ERROR_CODES = {
+    "NOT_CONFIGURED",
+    "API_KEY_NOT_CONFIGURED",
+    "KEY_NOT_CONFIGURED",
+    "MANAGEMENT_KEY_NOT_CONFIGURED",
+}
 
 
 class ProviderCard(QFrame):
@@ -20,6 +27,7 @@ class ProviderCard(QFrame):
         summary_type: str,
         quota_fields: tuple[tuple[str, str], ...] = (),
         omit_missing_quota: bool = False,
+        balance_display: str = "percent",
     ) -> None:
         super().__init__()
         self.short_name = title
@@ -27,57 +35,77 @@ class ProviderCard(QFrame):
         self.summary_type = summary_type
         self.quota_fields = quota_fields
         self.omit_missing_quota = omit_missing_quota
-        self.setFixedSize(44, 128)
+        self.balance_display = balance_display
+        self.setObjectName("provider_card")
+        self.setFixedSize(62, 104)
         self.setFrameStyle(QFrame.Shape.NoFrame)
+        self.setStyleSheet(
+            "QFrame#provider_card {"
+            "background-color: rgba(18, 25, 42, 246);"
+            "border: 1px solid #263654;"
+            "border-radius: 14px;"
+            "}"
+        )
+        self.setToolTip(self.full_name)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(2, 3, 2, 2)
+        layout.setContentsMargins(6, 7, 6, 7)
         layout.setSpacing(0)
 
+        heading = QWidget(self)
+        heading.setFixedHeight(14)
+        heading_layout = QHBoxLayout(heading)
+        heading_layout.setContentsMargins(0, 0, 0, 0)
+        heading_layout.setSpacing(3)
+        heading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
         self.status_dot = QLabel("●", self)
-        self.status_dot.setFixedHeight(10)
+        self.status_dot.setFixedSize(7, 14)
         self.status_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.title_label = QLabel(title)
-        self.title_label.setFixedHeight(15)
+        self.title_label.setFixedHeight(14)
         self.title_label.setWordWrap(False)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setToolTip(self.full_name)
+        heading_layout.addWidget(self.status_dot)
+        heading_layout.addWidget(self.title_label)
 
+        # Keep the long name available to callers, accessibility tools, and old
+        # settings data without rendering it on the compact main card.
         self.full_name_label = QLabel(self.full_name, self)
-        self.full_name_label.setFixedHeight(22)
-        self.full_name_label.setWordWrap(True)
-        self.full_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.full_name_label.setToolTip(self.full_name)
+        self.full_name_label.hide()
 
         self.time_label = QLabel("", self)
-        self.time_label.setFixedHeight(11)
-        self.time_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+        self.time_label.setFixedHeight(9)
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.value_label = QLabel("조회 중", self)
-        self.value_label.setFixedHeight(38)
+        self.value_label = QLabel("···", self)
+        self.value_label.setFixedHeight(34)
         self.value_label.setWordWrap(True)
         self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.value_label.setToolTip("조회 중")
 
         self.window_label = QLabel(self._window_label_text(), self)
-        self.window_label.setFixedHeight(11)
+        self.window_label.setFixedHeight(10)
         self.window_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        layout.addWidget(self.status_dot)
-        layout.addWidget(self.title_label)
-        layout.addWidget(self.full_name_label)
+        layout.addWidget(heading)
         layout.addWidget(self.time_label)
         layout.addStretch(1)
         layout.addWidget(self.value_label)
         layout.addStretch(1)
         layout.addWidget(self.window_label)
         self._set_font_10()
+        self._apply_status_style(ProviderStatus.OK)
 
     def set_loading(self) -> None:
         self.time_label.clear()
-        self.value_label.setText("조회 중")
-        self._set_value_font(18)
+        self.value_label.setText("···")
+        self.value_label.setToolTip("조회 중")
+        self._set_value_font(15)
         self._apply_status_style(ProviderStatus.OK)
 
     def set_snapshot(self, snapshot: UsageSnapshot) -> None:
@@ -91,7 +119,14 @@ class ProviderCard(QFrame):
                 if self._render_quota(snapshot):
                     self._apply_status_style(snapshot.status)
                     return
-            self.set_error(self._reason(snapshot))
+            if self.summary_type == "quota" and snapshot.quota_windows:
+                self.set_no_data(self._reason(snapshot))
+                return
+            self.set_error(
+                self._reason(snapshot),
+                error_code=snapshot.error_code,
+                status=snapshot.status,
+            )
             return
 
         if snapshot.status == ProviderStatus.MANUAL or self.summary_type == "manual":
@@ -101,22 +136,47 @@ class ProviderCard(QFrame):
 
         if self.summary_type == "balance":
             if not self._render_balance(snapshot):
-                self.set_error(self._reason(snapshot))
+                self.set_error(
+                    self._reason(snapshot),
+                    error_code=snapshot.error_code,
+                    status=snapshot.status,
+                )
                 return
         elif not self._render_quota(snapshot):
-            self.set_error(self._reason(snapshot))
+            if snapshot.quota_windows:
+                self.set_no_data(self._reason(snapshot))
+            else:
+                self.set_error(
+                    self._reason(snapshot),
+                    error_code=snapshot.error_code,
+                    status=snapshot.status,
+                )
             return
         self._apply_status_style(snapshot.status)
 
-    def set_error(self, message: str) -> None:
+    def set_error(
+        self,
+        message: str,
+        *,
+        error_code: str | None = None,
+        status: ProviderStatus = ProviderStatus.ERROR,
+    ) -> None:
         self.time_label.clear()
-        self.value_label.setText(message)
+        if self._is_missing_key(error_code, message):
+            self.value_label.setText("NO\nKEY")
+            self._set_value_font(8)
+        else:
+            self.value_label.setText("NOT\nCONNECTED")
+            self._set_value_font(6)
         self.value_label.setToolTip(message)
-        # A status message can be longer than the numeric value. Keep the
-        # requested large font for numbers while allowing errors to remain
-        # readable inside the compact card.
+        self._apply_status_style(status)
+
+    def set_no_data(self, message: str) -> None:
+        self.time_label.clear()
+        self.value_label.setText("NO\nDATA")
+        self.value_label.setToolTip(message)
         self._set_value_font(8)
-        self._apply_status_style(ProviderStatus.ERROR)
+        self._apply_status_style(ProviderStatus.UNAVAILABLE)
 
     def _render_quota(self, snapshot: UsageSnapshot) -> bool:
         if not self.quota_fields:
@@ -124,7 +184,7 @@ class ProviderCard(QFrame):
         summary = self._format_quota(snapshot)
         if summary is None:
             return False
-        self._set_value_font(18)
+        self._set_value_font(self._value_point_size(summary))
         self.value_label.setText(summary)
         tooltip = summary
         balance = self._format_balance(snapshot)
@@ -144,30 +204,64 @@ class ProviderCard(QFrame):
         amount = balance.remaining if balance.remaining is not None else balance.total
         if amount is None:
             return False
-        percent = max(0.0, min(100.0, float(amount) / 20 * 100))
-        text = f"{self._format_percent(percent)}%"
         self.time_label.clear()
-        self._set_value_font(18)
+        if self.balance_display == "amount":
+            currency = str(balance.currency).upper()
+            self.window_label.setText(currency)
+            amount_text = self._format_balance_amount_fixed(amount)
+            if amount <= 0:
+                self._set_value_font(8)
+                self.value_label.setText("NO\nCREDIT")
+                self.value_label.setToolTip(f"{amount_text} {currency}")
+                return True
+            self._set_value_font(12)
+            self.value_label.setText(amount_text)
+            self.value_label.setToolTip(f"{amount_text} {currency}")
+            return True
+        self.window_label.setText("BAL")
+        if amount <= 0:
+            self._set_value_font(8)
+            self.value_label.setText("NO\nCREDIT")
+            self.value_label.setToolTip(
+                f"{self._format_balance_amount(amount)} {balance.currency}"
+            )
+            return True
+        if (
+            balance.total is not None
+            and balance.used is not None
+            and balance.total > 0
+        ):
+            percent = float(amount / balance.total * 100)
+        else:
+            percent = float(amount) / 20 * 100
+        percent = max(0.0, min(100.0, percent))
+        text = f"{self._format_percent(percent)}%"
+        self._set_value_font(15)
         self.value_label.setText(text)
-        self.value_label.setToolTip(text.replace("\n", " "))
-        self.window_label.setText("잔액")
+        amount_text = self._format_balance_amount(amount)
+        self.value_label.setToolTip(
+            f"{text.replace(chr(10), ' ')} · {amount_text} {balance.currency}"
+        )
         return True
 
     def _render_manual(self, snapshot: UsageSnapshot) -> None:
         self.time_label.clear()
-        self._set_value_font(18)
-        self.value_label.setText("—")
+        self._set_value_font(6)
+        self.value_label.setText("NOT\nCONNECTED")
         self.value_label.setToolTip(snapshot.message or "사용량 연동 준비 중")
-        self.window_label.setText("수동")
+        self.window_label.setText("MAN")
 
     def _window_label_text(self) -> str:
         if self.summary_type == "balance":
-            return "잔액"
+            return "BAL"
         if self.summary_type == "manual":
-            return "수동"
-        if any(key == "five_hour" for key, _ in self.quota_fields):
-            return "5시간"
-        return "주간"
+            return "MAN"
+        keys = {key for key, _ in self.quota_fields}
+        if {"five_hour", "weekly"} <= keys:
+            return "5H/W"
+        if "five_hour" in keys:
+            return "5H"
+        return "WEEK"
 
     def _format_quota(self, snapshot: UsageSnapshot) -> str | None:
         quotas = {key: self._find_quota(snapshot, key) for key, _ in self.quota_fields}
@@ -272,6 +366,10 @@ class ProviderCard(QFrame):
     def _format_balance_amount(value: Decimal) -> str:
         return f"{value:.2f}".rstrip("0").rstrip(".")
 
+    @staticmethod
+    def _format_balance_amount_fixed(value: Decimal) -> str:
+        return f"{value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
+
     @classmethod
     def _format_amount(cls, value: Decimal, unit: str | None) -> str:
         number = cls._format_number(value)
@@ -279,8 +377,8 @@ class ProviderCard(QFrame):
 
     @staticmethod
     def _format_percent(value: float) -> str:
-        text = f"{value:.1f}".rstrip("0").rstrip(".")
-        return text or "0"
+        rounded = Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        return str(int(rounded))
 
     @classmethod
     def _format_remaining_percent(cls, used_percent: float) -> str:
@@ -288,35 +386,67 @@ class ProviderCard(QFrame):
 
     def _set_font_10(self) -> None:
         font = QFont(self.font())
+        font.setFamily("Noto Sans KR")
         font.setPointSize(10)
         self.setFont(font)
         card_font = QFont(font)
         card_font.setPointSize(8)
+        card_font.setBold(True)
         self.title_label.setFont(card_font)
         small_font = QFont(font)
-        small_font.setPointSize(6)
+        small_font.setPointSize(7)
         self.full_name_label.setFont(small_font)
-        self.time_label.setFont(card_font)
+        self.time_label.setFont(small_font)
         self.window_label.setFont(small_font)
-        self._set_value_font(18)
+        dot_font = QFont(font)
+        dot_font.setPointSize(6)
+        self.status_dot.setFont(dot_font)
+        self._set_value_font(15)
 
     def _set_value_font(self, point_size: int) -> None:
         value_font = QFont(self.font())
         value_font.setPointSize(point_size)
+        value_font.setBold(True)
         self.value_label.setFont(value_font)
 
     def _apply_status_style(self, status: ProviderStatus) -> None:
         palette = {
-            ProviderStatus.OK: "#202124",
-            ProviderStatus.WARNING: "#f9a825",
-            ProviderStatus.CRITICAL: "#c62828",
-            ProviderStatus.AUTH_REQUIRED: "#ef6c00",
-            ProviderStatus.UNAVAILABLE: "#616161",
-            ProviderStatus.ERROR: "#b71c1c",
-            ProviderStatus.STALE: "#6d4c41",
-            ProviderStatus.MANUAL: "#1565c0",
+            ProviderStatus.OK: "#33e8b8",
+            ProviderStatus.WARNING: "#ffbf4d",
+            ProviderStatus.CRITICAL: "#ff6b73",
+            ProviderStatus.AUTH_REQUIRED: "#ff9f43",
+            ProviderStatus.UNAVAILABLE: "#8596b2",
+            ProviderStatus.ERROR: "#ff6b73",
+            ProviderStatus.STALE: "#ffbf4d",
+            ProviderStatus.MANUAL: "#8596b2",
         }
-        color = palette.get(status, "#000000")
+        color = palette.get(status, "#8596b2")
         self.status_dot.setStyleSheet(f"color: {color};")
-        self.time_label.setStyleSheet(f"color: {color};")
-        self.value_label.setStyleSheet(f"color: {color};")
+        self.title_label.setStyleSheet(f"color: {color};")
+        self.time_label.setStyleSheet("color: #788cb0;")
+        self.window_label.setStyleSheet("color: #788cb0;")
+        self.value_label.setStyleSheet("color: #edf5ff;")
+
+    @staticmethod
+    def _value_point_size(text: str) -> int:
+        if "\n" in text:
+            return 7
+        if "/" in text:
+            return 9
+        if len(text) > 8:
+            return 8
+        return 15
+
+    @staticmethod
+    def _is_missing_key(error_code: str | None, message: str) -> bool:
+        normalized_code = (error_code or "").upper()
+        if normalized_code in _MISSING_KEY_ERROR_CODES:
+            return True
+        if normalized_code.endswith("_KEY_NOT_CONFIGURED"):
+            return True
+        normalized_message = message.lower()
+        mentions_key = "api 키" in normalized_message or "api key" in normalized_message
+        return mentions_key and any(
+            marker in normalized_message
+            for marker in ("없", "입력", "설정", "not configured", "missing")
+        )
