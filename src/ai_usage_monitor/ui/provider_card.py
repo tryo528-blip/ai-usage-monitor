@@ -222,15 +222,9 @@ class ProviderCard(QFrame):
         if amount <= 0:
             self._set_value_font(8)
             self.value_label.setText("NO\nCREDIT")
-            self.value_label.setToolTip(
-                f"{self._format_balance_amount(amount)} {balance.currency}"
-            )
+            self.value_label.setToolTip(f"{self._format_balance_amount(amount)} {balance.currency}")
             return True
-        if (
-            balance.total is not None
-            and balance.used is not None
-            and balance.total > 0
-        ):
+        if balance.total is not None and balance.used is not None and balance.total > 0:
             percent = float(amount / balance.total * 100)
         else:
             percent = float(amount) / 20 * 100

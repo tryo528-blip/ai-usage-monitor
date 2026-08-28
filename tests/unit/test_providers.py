@@ -6,9 +6,7 @@ from ai_usage_monitor.domain.providers import (
 
 
 def test_legacy_provider_selection_expands_to_adjacent_window_pairs() -> None:
-    selected = get_visible_provider_ids(
-        {"visible_providers": ["codex", "claude_5h", "antyg"]}
-    )
+    selected = get_visible_provider_ids({"visible_providers": ["codex", "claude_5h", "antyg"]})
 
     assert selected == (
         "codex_5h",

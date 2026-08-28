@@ -308,9 +308,7 @@ def test_provider_card_shows_no_data_when_requested_window_is_missing(qtbot) -> 
         source_type=SourceType.LOCAL_RPC,
         status=ProviderStatus.OK,
         collected_at=datetime.now(timezone.utc),
-        quota_windows=[
-            QuotaWindow(key="weekly", label="주간 사용량", used_percent=12.2)
-        ],
+        quota_windows=[QuotaWindow(key="weekly", label="주간 사용량", used_percent=12.2)],
     )
 
     card.set_snapshot(snapshot)

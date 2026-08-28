@@ -87,9 +87,7 @@ class CodexAppServerCollector(Collector):
                 continue
             window_minutes = value.get("window_minutes")
             used_percent = value.get("used_percent")
-            if not isinstance(window_minutes, int) or not isinstance(
-                used_percent, (int, float)
-            ):
+            if not isinstance(window_minutes, int) or not isinstance(used_percent, (int, float)):
                 continue
             spec = window_specs.get(window_minutes)
             if spec is None:
@@ -109,11 +107,7 @@ class CodexAppServerCollector(Collector):
                 window_minutes=window_minutes,
                 resets_at=reset_at,
             )
-        return [
-            parsed[key]
-            for key in ("five_hour", "weekly")
-            if key in parsed
-        ]
+        return [parsed[key] for key in ("five_hour", "weekly") if key in parsed]
 
     def _snapshot(
         self,

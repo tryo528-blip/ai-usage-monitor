@@ -163,18 +163,13 @@ class SettingsDialog(QDialog):
             and event.position().y() <= 70
             and self.childAt(event.position().toPoint()) is not self.close_button
         ):
-            self._drag_position = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
+            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if (
-            self._drag_position is not None
-            and event.buttons() == Qt.MouseButton.LeftButton
-        ):
+        if self._drag_position is not None and event.buttons() == Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_position)
             event.accept()
             return

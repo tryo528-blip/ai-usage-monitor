@@ -272,10 +272,7 @@ def test_settings_dialog_saves_visible_provider_selection(qtbot, tmp_path) -> No
     dialog.save_settings()
 
     assert settings_store.load()["visible_providers"] == ["codex", "grok", "antyg"]
-    assert (
-        settings_store.load()[PROVIDER_CARD_SCHEMA_SETTING]
-        == PROVIDER_CARD_SCHEMA_VERSION
-    )
+    assert settings_store.load()[PROVIDER_CARD_SCHEMA_SETTING] == PROVIDER_CARD_SCHEMA_VERSION
 
 
 def test_settings_dialog_save_does_not_touch_existing_api_key(tmp_path) -> None:
@@ -345,10 +342,7 @@ def test_api_key_input_dialog_saves_openrouter_management_key(qtbot) -> None:
     dialog.api_key_input.setText("openrouter-management-secret")
     dialog.save_key()
 
-    assert (
-        fake_secret_store.get("openrouter.management_key")
-        == "openrouter-management-secret"
-    )
+    assert fake_secret_store.get("openrouter.management_key") == "openrouter-management-secret"
 
 
 def test_api_key_dialog_exposes_every_provider_and_uses_regular_pretendard(
@@ -358,10 +352,7 @@ def test_api_key_dialog_exposes_every_provider_and_uses_regular_pretendard(
     dialog = ApiKeyInputDialog(secret_store=FakeSecretStore())
     qtbot.addWidget(dialog)
 
-    assert [
-        dialog.model_combo.itemText(index)
-        for index in range(dialog.model_combo.count())
-    ] == [
+    assert [dialog.model_combo.itemText(index) for index in range(dialog.model_combo.count())] == [
         "Codex",
         "Grok",
         "DeepSeek",

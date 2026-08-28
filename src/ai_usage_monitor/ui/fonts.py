@@ -6,9 +6,7 @@ from pathlib import Path
 from PySide6.QtGui import QFont, QFontDatabase
 
 PRETENDARD_FAMILY = "Pretendard"
-_PRETENDARD_REGULAR_PATH = (
-    Path(__file__).resolve().parent / "assets" / "Pretendard-Regular.otf"
-)
+_PRETENDARD_REGULAR_PATH = Path(__file__).resolve().parent / "assets" / "Pretendard-Regular.otf"
 
 
 @lru_cache(maxsize=1)

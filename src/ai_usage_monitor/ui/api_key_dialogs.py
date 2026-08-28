@@ -202,22 +202,14 @@ class _ApiKeyDialogBase(QDialog):
         self._drag_position: QPoint | None = None
 
     def mousePressEvent(self, event) -> None:
-        if (
-            event.button() == Qt.MouseButton.LeftButton
-            and event.position().y() <= 72
-        ):
-            self._drag_position = (
-                event.globalPosition().toPoint() - self.frameGeometry().topLeft()
-            )
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() <= 72:
+            self._drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
-        if (
-            self._drag_position is not None
-            and event.buttons() == Qt.MouseButton.LeftButton
-        ):
+        if self._drag_position is not None and event.buttons() == Qt.MouseButton.LeftButton:
             self.move(event.globalPosition().toPoint() - self._drag_position)
             event.accept()
             return
@@ -314,9 +306,7 @@ class ApiKeyInputDialog(_ApiKeyDialogBase):
         credential = self.selected_credential
         self.api_key_input.clear()
         if self._has_key(credential):
-            self.storage_note.setText(
-                "저장된 키 있음 · 값은 화면에 표시되지 않습니다."
-            )
+            self.storage_note.setText("저장된 키 있음 · 값은 화면에 표시되지 않습니다.")
         else:
             self.storage_note.setText(credential.note)
         self.test_button.setEnabled(credential.connection_test_supported)
@@ -417,9 +407,7 @@ class ApiKeyDeleteDialog(_ApiKeyDialogBase):
         credential = self.selected_credential
         has_key = self._has_key(credential)
         state = "저장된 키가 있습니다." if has_key else "저장된 키가 없습니다."
-        self.warning_body.setText(
-            f"{state} 삭제 후에는 해당 모델을 다시 연결해야 합니다."
-        )
+        self.warning_body.setText(f"{state} 삭제 후에는 해당 모델을 다시 연결해야 합니다.")
         self.delete_button.setEnabled(has_key)
 
     def delete_key(self) -> None:
