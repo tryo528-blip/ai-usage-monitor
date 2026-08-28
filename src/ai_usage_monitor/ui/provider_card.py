@@ -3,48 +3,12 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 from decimal import Decimal
 
-from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QColor, QFont, QPainter, QPen
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QFont
+from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout
 
 from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
-
-
-class VerticalUsageBar(QWidget):
-    def __init__(self, *, color: str, light_color: str, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.color = QColor(color)
-        self.light_color = QColor(light_color)
-        self.remaining = 0.0
-        self.setFixedSize(26, 88)
-
-    def set_remaining(self, value: float | None) -> None:
-        self.remaining = max(0.0, min(100.0, value or 0.0))
-        self.update()
-
-    def clear(self) -> None:
-        self.remaining = 0.0
-        self.update()
-
-    def paintEvent(self, event) -> None:  # noqa: ARG002
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        track = QRectF(6, 3, 16, self.height() - 6)
-        painter.setPen(QPen(self.light_color.darker(120), 1))
-        painter.setBrush(self.light_color)
-        painter.drawRoundedRect(track, 8, 8)
-
-        fill_height = track.height() * self.remaining / 100
-        if fill_height <= 0:
-            return
-        fill = QRectF(track.left(), track.bottom() - fill_height, track.width(), fill_height)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self.color)
-        painter.save()
-        painter.setClipRect(track)
-        painter.drawRoundedRect(fill, 8, 8)
-        painter.restore()
 
 
 class ProviderCard(QFrame):
@@ -52,54 +16,68 @@ class ProviderCard(QFrame):
         self,
         title: str,
         *,
+        full_name: str | None = None,
         summary_type: str,
         quota_fields: tuple[tuple[str, str], ...] = (),
-        bar_color: str = "#1565c0",
-        bar_light_color: str = "#bbdefb",
+        omit_missing_quota: bool = False,
     ) -> None:
         super().__init__()
+        self.short_name = title
+        self.full_name = full_name or title
         self.summary_type = summary_type
         self.quota_fields = quota_fields
-        self.setFixedSize(38, 148)
+        self.omit_missing_quota = omit_missing_quota
+        self.setFixedSize(44, 128)
         self.setFrameStyle(QFrame.Shape.NoFrame)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setContentsMargins(2, 3, 2, 2)
+        layout.setSpacing(0)
+
+        self.status_dot = QLabel("●", self)
+        self.status_dot.setFixedHeight(10)
+        self.status_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.title_label = QLabel(title)
-        self.title_label.setFixedHeight(21)
-        self.title_label.setWordWrap(True)
+        self.title_label.setFixedHeight(15)
+        self.title_label.setWordWrap(False)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.title_label.setToolTip(self.full_name)
+
+        self.full_name_label = QLabel(self.full_name, self)
+        self.full_name_label.setFixedHeight(22)
+        self.full_name_label.setWordWrap(True)
+        self.full_name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.full_name_label.setToolTip(self.full_name)
 
         self.time_label = QLabel("", self)
-        self.time_label.setFixedHeight(14)
+        self.time_label.setFixedHeight(11)
         self.time_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
 
-        self.bar = VerticalUsageBar(
-            color=bar_color,
-            light_color=bar_light_color,
-            parent=self,
-        )
         self.value_label = QLabel("조회 중", self)
-        self.value_label.setFixedHeight(18)
-        self.value_label.setContentsMargins(0, 2, 0, 0)
+        self.value_label.setFixedHeight(38)
         self.value_label.setWordWrap(True)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
 
-        layout.addWidget(self.time_label)
-        layout.addWidget(self.bar, 0, Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(self.value_label)
-        layout.addSpacing(-3)
+        self.window_label = QLabel(self._window_label_text(), self)
+        self.window_label.setFixedHeight(11)
+        self.window_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        layout.addWidget(self.status_dot)
         layout.addWidget(self.title_label)
-        layout.addStretch(0)
+        layout.addWidget(self.full_name_label)
+        layout.addWidget(self.time_label)
+        layout.addStretch(1)
+        layout.addWidget(self.value_label)
+        layout.addStretch(1)
+        layout.addWidget(self.window_label)
         self._set_font_10()
 
     def set_loading(self) -> None:
         self.time_label.clear()
-        self.bar.clear()
         self.value_label.setText("조회 중")
+        self._set_value_font(18)
         self._apply_status_style(ProviderStatus.OK)
 
     def set_snapshot(self, snapshot: UsageSnapshot) -> None:
@@ -116,6 +94,11 @@ class ProviderCard(QFrame):
             self.set_error(self._reason(snapshot))
             return
 
+        if snapshot.status == ProviderStatus.MANUAL or self.summary_type == "manual":
+            self._render_manual(snapshot)
+            self._apply_status_style(snapshot.status)
+            return
+
         if self.summary_type == "balance":
             if not self._render_balance(snapshot):
                 self.set_error(self._reason(snapshot))
@@ -127,9 +110,12 @@ class ProviderCard(QFrame):
 
     def set_error(self, message: str) -> None:
         self.time_label.clear()
-        self.bar.clear()
         self.value_label.setText(message)
         self.value_label.setToolTip(message)
+        # A status message can be longer than the numeric value. Keep the
+        # requested large font for numbers while allowing errors to remain
+        # readable inside the compact card.
+        self._set_value_font(8)
         self._apply_status_style(ProviderStatus.ERROR)
 
     def _render_quota(self, snapshot: UsageSnapshot) -> bool:
@@ -138,16 +124,17 @@ class ProviderCard(QFrame):
         summary = self._format_quota(snapshot)
         if summary is None:
             return False
+        self._set_value_font(18)
         self.value_label.setText(summary)
-        self.value_label.setToolTip(summary)
+        tooltip = summary
+        balance = self._format_balance(snapshot)
+        if balance:
+            tooltip = f"{summary}\n{balance}"
+        self.value_label.setToolTip(tooltip)
         has_five_hour_window = any(key == "five_hour" for key, _ in self.quota_fields)
         reset_time = self._format_reset_time(snapshot) if has_five_hour_window else None
         self.time_label.setText(reset_time or "")
-        quota = self._find_quota(snapshot, self.quota_fields[0][0])
-        if quota is not None and quota.used_percent is not None:
-            self.bar.set_remaining(100.0 - quota.used_percent)
-        else:
-            self.bar.clear()
+        self.window_label.setText(self._window_label_text())
         return True
 
     def _render_balance(self, snapshot: UsageSnapshot) -> bool:
@@ -160,10 +147,27 @@ class ProviderCard(QFrame):
         percent = max(0.0, min(100.0, float(amount) / 20 * 100))
         text = f"{self._format_percent(percent)}%"
         self.time_label.clear()
+        self._set_value_font(18)
         self.value_label.setText(text)
         self.value_label.setToolTip(text.replace("\n", " "))
-        self.bar.set_remaining(float(amount) / 20 * 100)
+        self.window_label.setText("잔액")
         return True
+
+    def _render_manual(self, snapshot: UsageSnapshot) -> None:
+        self.time_label.clear()
+        self._set_value_font(18)
+        self.value_label.setText("—")
+        self.value_label.setToolTip(snapshot.message or "사용량 연동 준비 중")
+        self.window_label.setText("수동")
+
+    def _window_label_text(self) -> str:
+        if self.summary_type == "balance":
+            return "잔액"
+        if self.summary_type == "manual":
+            return "수동"
+        if any(key == "five_hour" for key, _ in self.quota_fields):
+            return "5시간"
+        return "주간"
 
     def _format_quota(self, snapshot: UsageSnapshot) -> str | None:
         quotas = {key: self._find_quota(snapshot, key) for key, _ in self.quota_fields}
@@ -171,7 +175,8 @@ class ProviderCard(QFrame):
         for key, label in self.quota_fields:
             quota = quotas[key]
             if quota is None:
-                parts.append(self._format_missing_quota(snapshot, key, label))
+                if not self.omit_missing_quota:
+                    parts.append(self._format_missing_quota(snapshot, key, label))
                 continue
             if quota.used_percent is not None:
                 parts.append(f"{self._format_remaining_percent(quota.used_percent)}%")
@@ -288,8 +293,17 @@ class ProviderCard(QFrame):
         card_font = QFont(font)
         card_font.setPointSize(8)
         self.title_label.setFont(card_font)
+        small_font = QFont(font)
+        small_font.setPointSize(6)
+        self.full_name_label.setFont(small_font)
         self.time_label.setFont(card_font)
-        self.value_label.setFont(card_font)
+        self.window_label.setFont(small_font)
+        self._set_value_font(18)
+
+    def _set_value_font(self, point_size: int) -> None:
+        value_font = QFont(self.font())
+        value_font.setPointSize(point_size)
+        self.value_label.setFont(value_font)
 
     def _apply_status_style(self, status: ProviderStatus) -> None:
         palette = {
@@ -303,5 +317,6 @@ class ProviderCard(QFrame):
             ProviderStatus.MANUAL: "#1565c0",
         }
         color = palette.get(status, "#000000")
+        self.status_dot.setStyleSheet(f"color: {color};")
         self.time_label.setStyleSheet(f"color: {color};")
         self.value_label.setStyleSheet(f"color: {color};")

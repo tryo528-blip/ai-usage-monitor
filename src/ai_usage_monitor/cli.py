@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import sys
 
+from ai_usage_monitor.collectors.antyg_bridge import AntigravityCollector
 from ai_usage_monitor.collectors.claude_bridge import ClaudeBridgeCollector
 from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
 from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
 from ai_usage_monitor.collectors.grok import GrokCollector
-from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import UsageSnapshot
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
@@ -34,10 +34,10 @@ def _format_snapshot(snapshot: UsageSnapshot) -> str:
 def main() -> int:
     secret_store = SecretStore()
     collectors = [
+        AntigravityCollector(),
         ClaudeBridgeCollector(),
         CodexAppServerCollector(),
         GrokCollector(),
-        OpenRouterCollector(secret_store=secret_store),
         DeepSeekCollector(secret_store=secret_store),
     ]
 

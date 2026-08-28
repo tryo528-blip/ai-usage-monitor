@@ -1,3 +1,4 @@
+from .antyg_bridge import AntigravityCollector
 from .base import Collector
 from .deepseek import DeepSeekCollector
 from .grok import GrokCollector
@@ -7,6 +8,7 @@ from .openrouter import OpenRouterCollector
 
 __all__ = [
     "Collector",
+    "AntigravityCollector",
     "MockCollector",
     "ManualCollector",
     "OpenRouterCollector",

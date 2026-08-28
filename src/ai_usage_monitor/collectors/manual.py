@@ -9,6 +9,8 @@ from .base import Collector
 
 
 class ManualCollector(Collector):
+    """Keep a selectable provider visible until its real collector exists."""
+
     provider_id = "manual"
     provider_name = "Grok / Gemini"
 
@@ -28,5 +30,5 @@ class ManualCollector(Collector):
             status=ProviderStatus.MANUAL,
             collected_at=now,
             last_success_at=now,
-            message="수동 입력 카드",
+            message="사용량 연동 준비 중",
         )

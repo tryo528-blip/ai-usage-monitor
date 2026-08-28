@@ -52,7 +52,7 @@ def test_provider_card_shows_requested_quota_fields_and_reset_time(qtbot) -> Non
     assert card.time_label.text() == "13:00"
     assert card.font().pointSize() == 10
     assert card.title_label.font().pointSize() == 8
-    assert card.value_label.font().pointSize() == 8
+    assert card.value_label.font().pointSize() == 18
 
 
 def test_provider_card_shows_only_unavailable_reason_when_data_is_missing(qtbot) -> None:
@@ -165,3 +165,51 @@ def test_provider_card_keeps_weekly_usage_when_five_hour_block_is_missing(qtbot)
     card.set_snapshot(snapshot)
 
     assert card.value_label.text() == "1,200 \uc0ac\uc6a9 / 5H \uc5c6\uc74c"
+
+
+def test_provider_card_shows_placeholder_for_unconnected_model(qtbot) -> None:
+    QApplication.instance() or QApplication([])
+    card = ProviderCard("Z.AI", summary_type="manual")
+    qtbot.addWidget(card)
+    snapshot = UsageSnapshot(
+        provider_id="zai",
+        provider_name="Z.AI",
+        source_type=SourceType.MANUAL,
+        status=ProviderStatus.MANUAL,
+        collected_at=datetime.now(timezone.utc),
+        message="사용량 연동 준비 중",
+    )
+
+    card.set_snapshot(snapshot)
+
+    assert card.value_label.text() == "—"
+    assert card.value_label.font().pointSize() == 18
+    assert card.value_label.toolTip() == "사용량 연동 준비 중"
+
+
+def test_provider_card_omits_missing_antigravity_window(qtbot) -> None:
+    QApplication.instance() or QApplication([])
+    card = ProviderCard(
+        "AntyG",
+        summary_type="quota",
+        quota_fields=(
+            ("five_hour", "5시간 사용량"),
+            ("weekly", "주간 사용량"),
+        ),
+        omit_missing_quota=True,
+    )
+    qtbot.addWidget(card)
+    snapshot = UsageSnapshot(
+        provider_id="antyg",
+        provider_name="Google Antigravity (Gemini)",
+        source_type=SourceType.LOCAL_BRIDGE,
+        status=ProviderStatus.OK,
+        collected_at=datetime.now(timezone.utc),
+        quota_windows=[
+            QuotaWindow(key="weekly", label="주간 사용량", used_percent=2.0),
+        ],
+    )
+
+    card.set_snapshot(snapshot)
+
+    assert card.value_label.text() == "98%"

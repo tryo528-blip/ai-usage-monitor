@@ -14,10 +14,15 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
-from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
+from ai_usage_monitor.domain.providers import (
+    PROVIDER_DEFINITIONS,
+    VISIBLE_PROVIDERS_SETTING,
+    get_visible_provider_ids,
+)
 from ai_usage_monitor.infrastructure.secret_store import FakeSecretStore, SecretStore
 from ai_usage_monitor.infrastructure.settings_store import SettingsStore
 
@@ -60,23 +65,44 @@ class SettingsDialog(QDialog):
         self._pending_test_count = 0
 
         settings = self.settings_store.load()
+        visible_provider_ids = set(get_visible_provider_ids(settings))
         layout = QVBoxLayout(self)
         form = QFormLayout()
 
-        self.management_key = QLineEdit()
-        self.management_key.setEchoMode(QLineEdit.EchoMode.Password)
         self.deepseek_key = QLineEdit()
         self.deepseek_key.setEchoMode(QLineEdit.EchoMode.Password)
+
+        layout.addWidget(QLabel("표시할 모델"))
+        self.provider_checkboxes = {}
+        self.provider_rows = {}
+        for definition in PROVIDER_DEFINITIONS:
+            row = QWidget(self)
+            row.setFixedHeight(24)
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+
+            checkbox = QCheckBox(definition.title, row)
+            checkbox.setChecked(definition.provider_id in visible_provider_ids)
+            checkbox.setMinimumWidth(64)
+            checkbox.setToolTip(definition.full_name or definition.title)
+            self.provider_checkboxes[definition.provider_id] = checkbox
+
+            full_name = QLabel(definition.full_name or definition.title, row)
+            full_name.setStyleSheet("color: #6b7280;")
+            full_name.setToolTip(definition.full_name or definition.title)
+            row_layout.addWidget(checkbox)
+            row_layout.addWidget(full_name, 1)
+            self.provider_rows[definition.provider_id] = row
+            layout.addWidget(row)
 
         self.auto_refresh = QCheckBox("자동 새로고침")
         self.start_on_launch = QCheckBox("시작 시 실행 (준비 중)")
         self.start_on_launch.setEnabled(False)
-        self.delete_management_key = QCheckBox("OpenRouter Management 키 삭제")
         self.delete_deepseek_key = QCheckBox("DeepSeek 키 삭제")
 
         self.auto_refresh.setChecked(bool(settings.get("auto_refresh", True)))
 
-        form.addRow(QLabel("OpenRouter Management 키"), self.management_key)
         form.addRow(QLabel("DeepSeek API 키"), self.deepseek_key)
         layout.addLayout(form)
 
@@ -90,7 +116,6 @@ class SettingsDialog(QDialog):
         layout.addLayout(auth_buttons)
         layout.addWidget(self.auto_refresh)
         layout.addWidget(self.start_on_launch)
-        layout.addWidget(self.delete_management_key)
         layout.addWidget(self.delete_deepseek_key)
 
         buttons = QHBoxLayout()
@@ -124,37 +149,28 @@ class SettingsDialog(QDialog):
     def save_settings(self) -> None:
         settings = self.settings_store.load()
         settings["auto_refresh"] = self.auto_refresh.isChecked()
+        settings[VISIBLE_PROVIDERS_SETTING] = [
+            definition.provider_id
+            for definition in PROVIDER_DEFINITIONS
+            if self.provider_checkboxes[definition.provider_id].isChecked()
+        ]
         self.settings_store.save(settings)
 
-        for key, widget, delete_checkbox in (
-            ("openrouter.management_key", self.management_key, self.delete_management_key),
-            ("deepseek.api_key", self.deepseek_key, self.delete_deepseek_key),
-        ):
-            value = widget.text().strip()
-            if delete_checkbox.isChecked():
-                try:
-                    self.secret_store.delete(key)
-                except Exception:
-                    pass
-            elif value:
-                self.secret_store.set(key, value)
+        value = self.deepseek_key.text().strip()
+        if self.delete_deepseek_key.isChecked():
+            try:
+                self.secret_store.delete("deepseek.api_key")
+            except Exception:
+                pass
+        elif value:
+            self.secret_store.set("deepseek.api_key", value)
         self.accept()
 
     def test_connection(self) -> None:
         temp_store = FakeSecretStore()
         pending = []
 
-        management_key = self.management_key.text().strip()
         deepseek_key = self.deepseek_key.text().strip()
-
-        if management_key:
-            temp_store.set("openrouter.management_key", management_key)
-            worker = ConnectionTestWorker(
-                OpenRouterCollector(secret_store=temp_store),
-                "OpenRouter",
-            )
-            worker.signals.finished.connect(self._handle_test_result)
-            pending.append(worker)
 
         if deepseek_key:
             temp_store.set("deepseek.api_key", deepseek_key)
