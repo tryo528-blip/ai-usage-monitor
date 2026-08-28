@@ -21,6 +21,7 @@ from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
 from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
 from ai_usage_monitor.collectors.grok import GrokCollector
 from ai_usage_monitor.collectors.manual import ManualCollector
+from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.providers import (
     PROVIDER_DEFINITION_BY_ID,
     PROVIDER_DEFINITIONS,
@@ -35,23 +36,28 @@ from ai_usage_monitor.services.status_policy import determine_status
 from .provider_card import ProviderCard
 from .settings_dialog import SettingsDialog
 
-_CARD_WIDTH = 44
-_CARD_HEIGHT = 128
-_CARD_SPACING = 4
-_MARGIN_X = 12
-_WINDOW_HEIGHT = 200
-_REFRESH_WIDTH = 62
-_MIN_WINDOW_WIDTH = 180
-_SIDE_EXTRA = 2
-_TITLE_ROW_HEIGHT = 34
-_CONTROL_HEIGHT = 22
+_CARD_WIDTH = 62
+_CARD_HEIGHT = 104
+_CARD_SPACING = 8
+_MARGIN_X = 14
+_WINDOW_HEIGHT = 180
+_EMPTY_WINDOW_HEIGHT = 60
+_REFRESH_WIDTH = 42
+_SETTINGS_WIDTH = 42
+_MIN_WINDOW_WIDTH = 230
+_TITLE_ROW_HEIGHT = 32
+_CONTROL_HEIGHT = 32
 
 
 def _window_width(card_count: int) -> int:
     row = 0
     if card_count > 0:
         row = card_count * _CARD_WIDTH + (card_count - 1) * _CARD_SPACING
-    return max(_MIN_WINDOW_WIDTH, row + 2 * _MARGIN_X + 2 * _SIDE_EXTRA)
+    return max(_MIN_WINDOW_WIDTH, row + 2 * _MARGIN_X)
+
+
+def _window_height(card_count: int) -> int:
+    return _WINDOW_HEIGHT if card_count else _EMPTY_WINDOW_HEIGHT
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +74,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AI Usage Monitor")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self._set_font_10()
         self._drag_position: QPoint | None = None
 
@@ -122,69 +129,106 @@ class MainWindow(QMainWindow):
         root.setObjectName("app_frame")
         root.setFont(self.font())
         root.setStyleSheet(
-            "#app_frame { background-color: #f6f8fc; border: 1px solid #d1d7e2; "
-            "border-radius: 12px; }"
+            "#app_frame {"
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+            "stop:0 #0b1020, stop:1 #12192d);"
+            "border: 1px solid #293857;"
+            "border-radius: 20px;"
+            "}"
+            "QLabel#brand_title { color: #ebf2ff; }"
+            "QLabel#local_badge {"
+            "color: #73c7ff; background-color: #1f2e4a;"
+            "border-radius: 7px; padding: 1px 6px;"
+            "}"
+            "QPushButton#primary_action {"
+            "background-color: #26344f; color: #f2f6ff;"
+            "border: 1px solid #334664; border-radius: 9px;"
+            "font-weight: bold;"
+            "}"
+            "QPushButton#primary_action:hover { background-color: #344766; }"
+            "QPushButton#window_action {"
+            "background-color: #eef1f6; color: #202735;"
+            "border: 1px solid #cbd3df; border-radius: 9px;"
+            "font-weight: bold;"
+            "}"
+            "QPushButton#window_action:hover { background-color: #ffffff; }"
+            "QPushButton#close_action:hover {"
+            "background-color: #ff6b73; color: #ffffff;"
+            "border-color: #ff6b73;"
+            "}"
         )
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(_MARGIN_X, 8, _MARGIN_X, 4)
-        layout.setSpacing(5)
+        layout.setContentsMargins(_MARGIN_X, 14, _MARGIN_X, 14)
+        layout.setSpacing(12)
 
         header = QWidget(root)
         header.setFixedHeight(_TITLE_ROW_HEIGHT)
         title_row = QHBoxLayout(header)
         title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(4)
+        title_row.setSpacing(6)
 
-        title_stack = QVBoxLayout()
-        title_stack.setContentsMargins(0, 0, 0, 0)
-        title_stack.setSpacing(0)
-        self.title_label = QLabel("남은 사용량")
-        self.title_label.setFixedHeight(17)
+        self.brand_widget = QWidget(header)
+        brand_row = QHBoxLayout(self.brand_widget)
+        brand_row.setContentsMargins(0, 0, 0, 0)
+        brand_row.setSpacing(7)
+        live_dot = QLabel("●", self.brand_widget)
+        live_dot.setStyleSheet("color: #33e8b8;")
+        live_dot_font = QFont(self.font())
+        live_dot_font.setPointSize(7)
+        live_dot.setFont(live_dot_font)
+        self.title_label = QLabel("AI USAGE", self.brand_widget)
+        self.title_label.setObjectName("brand_title")
         title_font = QFont(self.font())
-        title_font.setPointSize(10)
+        title_font.setPointSize(9)
         title_font.setBold(True)
         self.title_label.setFont(title_font)
-        self.title_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.subtitle_label = QLabel("AI Usage Monitor")
-        self.subtitle_label.setFixedHeight(12)
+        self.subtitle_label = QLabel("LOCAL", self.brand_widget)
+        self.subtitle_label.setObjectName("local_badge")
         subtitle_font = QFont(self.font())
-        subtitle_font.setPointSize(7)
+        subtitle_font.setPointSize(6)
         self.subtitle_label.setFont(subtitle_font)
-        self.subtitle_label.setStyleSheet("color: #6b7280;")
-        title_stack.addWidget(self.title_label)
-        title_stack.addWidget(self.subtitle_label)
+        brand_row.addWidget(live_dot)
+        brand_row.addWidget(self.title_label)
+        brand_row.addWidget(self.subtitle_label)
 
-        self.minimize_button = QPushButton("—")
-        self.close_button = QPushButton("×")
         button_font = QFont(self.font())
         button_font.setPointSize(8)
-        self.minimize_button.setFont(button_font)
-        self.close_button.setFont(button_font)
-        self.minimize_button.setFixedSize(20, _CONTROL_HEIGHT)
-        self.close_button.setFixedSize(20, _CONTROL_HEIGHT)
-        self.minimize_button.setToolTip("최소화")
-        self.close_button.setToolTip("닫기")
-        self.minimize_button.setFlat(True)
-        self.close_button.setFlat(True)
-        self.close_button.setStyleSheet("QPushButton { color: #c62828; font-weight: bold; }")
-        self.refresh_button = QPushButton("새로고침")
-        self.settings_button = QPushButton("설정")
-        self.refresh_button.setFont(button_font)
-        self.settings_button.setFont(button_font)
+        self.refresh_button = QPushButton("REF", header)
+        self.settings_button = QPushButton("SET", header)
+        self.minimize_button = QPushButton("—", header)
+        self.close_button = QPushButton("×", header)
+        for button in (
+            self.refresh_button,
+            self.settings_button,
+            self.minimize_button,
+            self.close_button,
+        ):
+            button.setFont(button_font)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.refresh_button.setObjectName("primary_action")
+        self.settings_button.setObjectName("primary_action")
+        self.minimize_button.setObjectName("window_action")
+        self.close_button.setObjectName("close_action")
+        self.close_button.setStyleSheet(
+            "QPushButton {"
+            "background-color: #eef1f6; color: #202735;"
+            "border: 1px solid #cbd3df; border-radius: 9px;"
+            "font-weight: bold;"
+            "}"
+            "QPushButton:hover {"
+            "background-color: #ff6b73; color: #ffffff; border-color: #ff6b73;"
+            "}"
+        )
         self.refresh_button.setFixedSize(_REFRESH_WIDTH, _CONTROL_HEIGHT)
-        self.settings_button.setFixedSize(38, _CONTROL_HEIGHT)
+        self.settings_button.setFixedSize(_SETTINGS_WIDTH, _CONTROL_HEIGHT)
+        self.minimize_button.setFixedSize(32, _CONTROL_HEIGHT)
+        self.close_button.setFixedSize(32, _CONTROL_HEIGHT)
         self.refresh_button.setToolTip("새로고침")
         self.settings_button.setToolTip("설정")
-        self.refresh_button.setStyleSheet(
-            "QPushButton { background: #ffffff; border: 1px solid #d6deeb; "
-            "border-radius: 7px; padding: 0 4px; color: #2b3748; }"
-        )
-        self.settings_button.setStyleSheet(
-            "QPushButton { background: #e6edff; border: 1px solid #d6deeb; "
-            "border-radius: 7px; padding: 0 4px; color: #1f4eb5; font-weight: bold; }"
-        )
+        self.minimize_button.setToolTip("최소화")
+        self.close_button.setToolTip("닫기")
 
-        title_row.addLayout(title_stack)
+        title_row.addWidget(self.brand_widget)
         title_row.addStretch(1)
         title_row.addWidget(self.refresh_button)
         title_row.addWidget(self.settings_button)
@@ -192,7 +236,10 @@ class MainWindow(QMainWindow):
         title_row.addWidget(self.close_button)
         layout.addWidget(header)
 
-        self.rows_layout = QHBoxLayout()
+        self.cards_container = QWidget(root)
+        self.cards_container.setFixedHeight(108)
+        self.rows_layout = QHBoxLayout(self.cards_container)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0)
         self.rows_layout.setSpacing(_CARD_SPACING)
         self.rows_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cards = {
@@ -202,12 +249,13 @@ class MainWindow(QMainWindow):
                 summary_type=definition.summary_type,
                 quota_fields=definition.quota_fields,
                 omit_missing_quota=definition.omit_missing_quota,
+                balance_display=definition.balance_display,
             )
             for definition in PROVIDER_DEFINITIONS
         }
         for card in self.cards.values():
             card.setFixedSize(_CARD_WIDTH, _CARD_HEIGHT)
-        layout.addLayout(self.rows_layout)
+        layout.addWidget(self.cards_container)
 
         self.setCentralWidget(root)
         self._sync_visible_cards()
@@ -221,7 +269,7 @@ class MainWindow(QMainWindow):
     def _build_default_collectors(self) -> list[Collector]:
         selected = set(self.selected_provider_ids)
         collectors = []
-        if "codex" in selected:
+        if selected & {"codex", "codex_5h"}:
             collectors.append(CodexAppServerCollector())
         if "grok" in selected:
             collectors.append(GrokCollector())
@@ -235,12 +283,16 @@ class MainWindow(QMainWindow):
                     ManualCollector(
                         provider_id,
                         definition.full_name or definition.title,
+                        secret_store=self.secret_store,
+                        secret_key=f"{provider_id}.api_key",
                     )
                 )
         if selected & {"claude", "claude_5h"}:
             collectors.append(ClaudeBridgeCollector())
-        if "antyg" in selected:
+        if selected & {"antyg", "antyg_5h"}:
             collectors.append(AntigravityCollector())
+        if "openrouter" in selected:
+            collectors.append(OpenRouterCollector(secret_store=self.secret_store))
         return collectors
 
     def _sync_visible_cards(self) -> None:
@@ -256,7 +308,10 @@ class MainWindow(QMainWindow):
             self.rows_layout.addWidget(card)
             card.show()
 
-        self.setFixedSize(_window_width(len(self.selected_provider_ids)), _WINDOW_HEIGHT)
+        card_count = len(self.selected_provider_ids)
+        self.brand_widget.setVisible(card_count >= 5)
+        self.cards_container.setVisible(card_count > 0)
+        self.setFixedSize(_window_width(card_count), _window_height(card_count))
 
     def _build_timer(self) -> None:
         self.refresh_timer = QTimer(self)
@@ -321,5 +376,6 @@ class MainWindow(QMainWindow):
 
     def _set_font_10(self) -> None:
         font = QFont(self.font())
+        font.setFamily("Noto Sans KR")
         font.setPointSize(10)
         self.setFont(font)

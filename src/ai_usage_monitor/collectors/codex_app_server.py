@@ -76,31 +76,38 @@ class CodexAppServerCollector(Collector):
 
     @staticmethod
     def _parse_rate_limits(rate_limits: dict[str, object]) -> list[QuotaWindow]:
-        value = rate_limits.get("primary")
-        if not isinstance(value, dict):
-            return []
-        window_minutes = value.get("window_minutes")
-        used_percent = value.get("used_percent")
-        if not isinstance(window_minutes, int) or not isinstance(used_percent, (int, float)):
-            return []
-        if window_minutes != 10080:
-            return []
-        reset_value = value.get("resets_at")
-        reset_at = (
-            datetime.fromtimestamp(reset_value, tz=timezone.utc)
-            if isinstance(reset_value, (int, float))
-            else None
-        )
-        return [
-            QuotaWindow(
-                key="weekly",
-                label="주간 사용량",
+        parsed: dict[str, QuotaWindow] = {}
+        window_specs = {
+            300: ("five_hour", "5시간 사용량"),
+            10080: ("weekly", "주간 사용량"),
+        }
+        for slot in ("primary", "secondary"):
+            value = rate_limits.get(slot)
+            if not isinstance(value, dict):
+                continue
+            window_minutes = value.get("window_minutes")
+            used_percent = value.get("used_percent")
+            if not isinstance(window_minutes, int) or not isinstance(used_percent, (int, float)):
+                continue
+            spec = window_specs.get(window_minutes)
+            if spec is None:
+                continue
+            key, label = spec
+            reset_value = value.get("resets_at")
+            reset_at = (
+                datetime.fromtimestamp(reset_value, tz=timezone.utc)
+                if isinstance(reset_value, (int, float))
+                else None
+            )
+            parsed[key] = QuotaWindow(
+                key=key,
+                label=label,
                 used_percent=float(used_percent),
                 unit="percent",
                 window_minutes=window_minutes,
                 resets_at=reset_at,
             )
-        ]
+        return [parsed[key] for key in ("five_hour", "weekly") if key in parsed]
 
     def _snapshot(
         self,

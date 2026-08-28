@@ -7,6 +7,7 @@ from ai_usage_monitor.collectors.claude_bridge import ClaudeBridgeCollector
 from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
 from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
 from ai_usage_monitor.collectors.grok import GrokCollector
+from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import UsageSnapshot
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
@@ -39,6 +40,7 @@ def main() -> int:
         CodexAppServerCollector(),
         GrokCollector(),
         DeepSeekCollector(secret_store=secret_store),
+        OpenRouterCollector(secret_store=secret_store),
     ]
 
     exit_code = 0
