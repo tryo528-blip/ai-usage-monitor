@@ -4,7 +4,7 @@ A local Windows desktop dashboard for monitoring AI provider usage limits, balan
 
 ## Features
 
-- Codex local rate-limit snapshot, Grok weekly usage bridge, Claude 5-hour usage bridge,
+- Codex live local app-server rate limits, Grok weekly usage bridge, Claude 5-hour usage bridge,
   AntyG (Google Antigravity/Gemini) quota bridge, plus DeepSeek official HTTP API
 - Settings can select which provider/model cards are shown. AntyG reads Gemini quota and any
   credits embedded in the same response from the signed-in Google Antigravity CLI (`agy`);
@@ -39,8 +39,8 @@ ruff format --check .
 ## Notes
 
 - No production credentials are stored in the repository.
-- Codex usage reads the latest local rate-limit snapshot from
-  `C:\Users\sswce\.codex\sessions`.
+- Codex usage reads live rate limits from the signed-in local `codex app-server`. Local session
+  snapshots are a fallback, and already-expired quota windows are ignored.
 - Claude usage reads the fixed Claude CLI config root `C:\Users\sswce\.claude` by running hidden
   `/usage` and parsing the session/week percentages and reset times.
 - Grok usage reads the fixed CLI auth file `C:\Users\sswce\.grok\auth.json` and polls authenticated
