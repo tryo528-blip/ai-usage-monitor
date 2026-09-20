@@ -17,7 +17,6 @@ from .base import Collector
 
 ANTYG_TIMEOUT_SECONDS = 30
 ANTYG_COMMAND = "/usage"
-ANTYG_CREDITS_COMMAND = "/credits"
 ANTYG_CLI_HIDE_ACCOUNT_INFO = "1"
 
 _ANSI_ESCAPE_PATTERN = re.compile(r"\x1b(?:\][^\x07]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-_])")
@@ -103,19 +102,6 @@ class AntigravityCollector(Collector):
 
         quota_windows = self._parse_usage(output, now=now)
         balances = self._parse_credits(output)
-        if not balances:
-            try:
-                balances = self._parse_credits(self._run_credits())
-            except (
-                AntigravityAuthRequired,
-                FileNotFoundError,
-                RuntimeError,
-                OSError,
-                subprocess.SubprocessError,
-            ):
-                # Credits are optional for quota-only accounts. Do not turn a
-                # valid /usage response into an error when /credits is absent.
-                pass
         if not quota_windows:
             return self._snapshot(
                 status=ProviderStatus.ERROR,
@@ -159,10 +145,6 @@ class AntigravityCollector(Collector):
     @classmethod
     def _run_usage(cls) -> str:
         return cls._run_cli_command(ANTYG_COMMAND)
-
-    @classmethod
-    def _run_credits(cls) -> str:
-        return cls._run_cli_command(ANTYG_CREDITS_COMMAND)
 
     @classmethod
     def _run_cli_command(cls, command_name: str) -> str:
@@ -423,9 +405,20 @@ class AntigravityCollector(Collector):
 
     @classmethod
     def _quota_key(cls, mapping: Mapping[str, Any], context: tuple[str, ...]) -> str | None:
-        values = [str(value) for value in mapping.values() if isinstance(value, (str, int, float))]
-        values.extend(context)
-        return cls._quota_key_from_text(" ".join(values))
+        # Prefer the bucket's own identifiers over inherited group context.
+        # Current agy output includes a group description mentioning both the
+        # weekly and five-hour limits. Combining that description with a
+        # weekly bucket made the five-hour matcher win simply because it is
+        # checked first.
+        direct_values = [
+            str(value)
+            for value in mapping.values()
+            if isinstance(value, (str, int, float))
+        ]
+        direct_key = cls._quota_key_from_text(" ".join(direct_values))
+        if direct_key is not None:
+            return direct_key
+        return cls._quota_key_from_text(" ".join(context))
 
     @staticmethod
     def _quota_key_from_text(value: str) -> str | None:

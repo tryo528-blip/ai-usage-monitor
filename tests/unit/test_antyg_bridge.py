@@ -114,6 +114,50 @@ def test_antigravity_parser_reads_tagged_remaining_and_credits() -> None:
     assert balances[0].remaining == Decimal("1234.0")
 
 
+def test_antigravity_parser_prefers_bucket_window_over_group_description() -> None:
+    payload = {
+        "command": {
+            "data": {
+                "groups": [
+                    {
+                        "name": "Gemini Models",
+                        "description": (
+                            "Models share a weekly limit and a 5-hour limit."
+                        ),
+                        "buckets": [
+                            {
+                                "id": "gemini-weekly",
+                                "name": "Weekly Limit Remaining",
+                                "window": "weekly",
+                                "remaining_fraction": 0.95,
+                                "reset_time": "2026-09-25T05:24:40Z",
+                            },
+                            {
+                                "id": "gemini-5h",
+                                "name": "Five Hour Limit Remaining",
+                                "window": "5h",
+                                "remaining_fraction": 1,
+                                "reset_time": "2026-09-20T13:26:38Z",
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+
+    quotas = AntigravityCollector._parse_usage(
+        json.dumps(payload),
+        now=datetime(2026, 9, 20, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert [quota.key for quota in quotas] == ["five_hour", "weekly"]
+    assert quotas[0].used_percent == pytest.approx(0.0)
+    assert quotas[1].used_percent == pytest.approx(5.0)
+    assert quotas[0].resets_at == datetime(2026, 9, 20, 13, 26, 38, tzinfo=timezone.utc)
+    assert quotas[1].resets_at == datetime(2026, 9, 25, 5, 24, 40, tzinfo=timezone.utc)
+
+
 def test_antigravity_usage_runs_read_only_cli_in_print_mode(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(
         AntigravityCollector,
@@ -189,9 +233,8 @@ def test_antigravity_collector_returns_snapshot_from_structured_output(monkeypat
     assert snapshot.balances[0].remaining == Decimal("42.0")
 
 
-def test_antigravity_collector_reads_optional_credits_command(monkeypatch) -> None:
+def test_antigravity_collector_does_not_request_separate_optional_credits(monkeypatch) -> None:
     usage_calls: list[str] = []
-    credits_calls: list[str] = []
     usage_without_credits = json.dumps(
         {
             "groups": [
@@ -214,15 +257,9 @@ def test_antigravity_collector_reads_optional_credits_command(monkeypatch) -> No
         "_run_usage",
         classmethod(lambda cls: usage_calls.append("usage") or usage_without_credits),
     )
-    monkeypatch.setattr(
-        AntigravityCollector,
-        "_run_credits",
-        classmethod(lambda cls: credits_calls.append("credits") or "AI Credits: 25"),
-    )
 
     snapshot = AntigravityCollector().collect()
 
     assert usage_calls == ["usage"]
-    assert credits_calls == ["credits"]
     assert snapshot.status == ProviderStatus.OK
-    assert snapshot.balances[0].remaining == Decimal("25")
+    assert snapshot.balances == []
