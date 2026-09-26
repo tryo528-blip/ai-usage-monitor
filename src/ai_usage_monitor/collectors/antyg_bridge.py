@@ -411,9 +411,7 @@ class AntigravityCollector(Collector):
         # weekly bucket made the five-hour matcher win simply because it is
         # checked first.
         direct_values = [
-            str(value)
-            for value in mapping.values()
-            if isinstance(value, (str, int, float))
+            str(value) for value in mapping.values() if isinstance(value, (str, int, float))
         ]
         direct_key = cls._quota_key_from_text(" ".join(direct_values))
         if direct_key is not None:

@@ -5,9 +5,13 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
+
+import httpx
 
 from ai_usage_monitor.domain.enums import ProviderStatus, SourceType
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
@@ -17,13 +21,42 @@ from .base import Collector
 CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_CODE_DIR = Path.home() / "AppData" / "Roaming" / "Claude" / "claude-code"
 USAGE_TIMEOUT_SECONDS = 30
+_PERCENT = r"(?P<percent>\d+(?:\.\d+)?)\s*%"
+# Any other bucket's label. The gap between a label and its percentage may not
+# run into one, so a line without a number never borrows the next line's value
+# (the output is whitespace-collapsed before matching).
+_NEXT_LABEL = r"Current (?:session|week)|현재 세션|이번 주"
+_GAP = r"(?:(?!" + _NEXT_LABEL + r")[^%]){0,80}?"
+# English CLI output ("Current week (Fable only): 0% used") and the Korean UI
+# wording ("이번 주 Fable ... 0% 사용됨").
 USAGE_LINE_PATTERNS = {
-    "five_hour": re.compile(r"Current session:\s*(?P<percent>\d+(?:\.\d+)?)%", re.IGNORECASE),
+    "five_hour": re.compile(r"(?:Current session|현재 세션)" + _GAP + _PERCENT, re.IGNORECASE),
+    # "Current week (all models)" or a bare "Current week", but never a
+    # model-specific "Current week (Sonnet only)" / "(Fable)".
     "weekly": re.compile(
-        r"Current week \(all models\):\s*(?P<percent>\d+(?:\.\d+)?)%",
+        r"(?:Current week(?:\s*\(all models\)|(?!\s*\())|이번 주(?!\s*\(?\s*fable))"
+        + _GAP
+        + _PERCENT,
+        re.IGNORECASE,
+    ),
+    "weekly_fable": re.compile(
+        r"(?:Current week|이번 주)\s*\(?[^%:]{0,20}?fable" + _GAP + _PERCENT,
         re.IGNORECASE,
     ),
 }
+USAGE_LABELS = {
+    "five_hour": "5시간 사용량",
+    "weekly": "주간 사용량",
+    "weekly_fable": "Fable 주간 사용량",
+}
+USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
+USAGE_API_TIMEOUT_SECONDS = 10
+# Buckets of the usage API that the settings page renders as "현재 세션" and
+# "이번 주", matched by their own key wherever they are nested. Any bucket whose
+# path mentions "fable" is the separate Fable limit, whatever the exact key is.
+API_BUCKET_KEYS = {"five_hour": "five_hour", "seven_day": "weekly"}
+# Treat a token as expired slightly early so a request never races expiry.
+TOKEN_EXPIRY_MARGIN_SECONDS = 60
 RESET_PATTERN = re.compile(r"resets\s+(?P<reset>.+?)\s+\((?P<zone>[^)]+)\)", re.IGNORECASE)
 
 
@@ -42,6 +75,16 @@ class ClaudeBridgeCollector(Collector):
                 message=f"Claude 설정 경로를 찾을 수 없습니다: {CLAUDE_CONFIG_DIR}",
                 collected_at=now,
                 error_code="CLAUDE_CONFIG_PATH_MISSING",
+            )
+
+        api_quotas = self._fetch_usage_api(now=now)
+        if api_quotas:
+            return self._snapshot(
+                status=ProviderStatus.OK,
+                message="정상 조회",
+                collected_at=now,
+                last_success_at=now,
+                quota_windows=api_quotas,
             )
 
         try:
@@ -69,6 +112,15 @@ class ClaudeBridgeCollector(Collector):
             )
 
         quota_windows = self._parse_usage(usage_output, now=now)
+        if not quota_windows and "Total cost:" in (usage_output or ""):
+            # Non-interactive `claude -p /usage` prints the cost summary, not
+            # the plan limits, so only the usage API can supply them.
+            return self._snapshot(
+                status=ProviderStatus.AUTH_REQUIRED,
+                message="Claude 로그인 토큰 만료/없음 · Claude Code를 한 번 사용하면 갱신됩니다",
+                collected_at=now,
+                error_code="CLAUDE_TOKEN_UNAVAILABLE",
+            )
         if not quota_windows:
             return self._snapshot(
                 status=ProviderStatus.ERROR,
@@ -84,6 +136,149 @@ class ClaudeBridgeCollector(Collector):
             last_success_at=now,
             quota_windows=quota_windows,
         )
+
+    # -- usage API (what claude.ai settings shows) -------------------------------------
+
+    @staticmethod
+    def _read_access_token(*, now: datetime) -> str | None:
+        """The Claude Code OAuth token, or None when missing or expired.
+
+        The token never leaves this process except as the bearer header to
+        Anthropic's own API, exactly as Claude Code itself sends it.
+        """
+
+        try:
+            data = json.loads((CLAUDE_CONFIG_DIR / ".credentials.json").read_text("utf-8"))
+        except (OSError, ValueError):
+            return None
+        oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
+        if not isinstance(oauth, dict):
+            return None
+        token = oauth.get("accessToken")
+        expires_at = oauth.get("expiresAt")
+        # expiresAt is epoch milliseconds; 0 or missing means no known expiry.
+        # An expired token is left alone: refreshing it here would rotate the
+        # refresh token under Claude Code. The CLI path renews it instead.
+        if (
+            isinstance(expires_at, (int, float))
+            and expires_at > 0
+            and expires_at / 1000 <= now.timestamp() + TOKEN_EXPIRY_MARGIN_SECONDS
+        ):
+            return None
+        return token if isinstance(token, str) and token else None
+
+    @classmethod
+    def fetch_usage_json(cls, *, now: datetime) -> Any | None:
+        token = cls._read_access_token(now=now)
+        if token is None:
+            return None
+        try:
+            response = httpx.get(
+                USAGE_API_URL,
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "anthropic-beta": "oauth-2025-04-20",
+                },
+                timeout=USAGE_API_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+    @classmethod
+    def _fetch_usage_api(cls, *, now: datetime) -> list[QuotaWindow]:
+        data = cls.fetch_usage_json(now=now)
+        return cls._parse_usage_json(data) if data is not None else []
+
+    @staticmethod
+    def _iter_buckets(
+        data: Any, path: tuple[str, ...] = ()
+    ) -> Iterator[tuple[tuple[str, ...], dict]]:
+        """Yield every dict carrying a numeric ``utilization``, with its key path."""
+
+        if not isinstance(data, dict):
+            return
+        if isinstance(data.get("utilization"), (int, float)):
+            yield path, data
+        for key, value in data.items():
+            if isinstance(value, dict):
+                yield from ClaudeBridgeCollector._iter_buckets(value, (*path, str(key)))
+
+    @classmethod
+    def _parse_usage_json(cls, data: Any) -> list[QuotaWindow]:
+        found: dict[str, dict] = {}
+        fable_rank = -1
+        for path, bucket in cls._iter_buckets(data):
+            if not path:
+                continue
+            joined = "/".join(path).lower()
+            if "fable" in joined:
+                # If Fable ever gets several windows, the weekly one wins.
+                rank = 1 if ("seven_day" in joined or "week" in joined) else 0
+                if rank > fable_rank:
+                    found["weekly_fable"] = bucket
+                    fable_rank = rank
+            elif path[-1] in API_BUCKET_KEYS:
+                found.setdefault(API_BUCKET_KEYS[path[-1]], bucket)
+
+        # Newer responses also carry a "limits" list; per-model weekly limits
+        # (Fable) appear only there, as kind "weekly_scoped" with the model in
+        # "scope". Top-level buckets above win when both are present.
+        limits = data.get("limits") if isinstance(data, dict) else None
+        for entry in limits if isinstance(limits, list) else []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("percent"), (int, float)):
+                continue
+            bucket = {"utilization": entry["percent"], "resets_at": entry.get("resets_at")}
+            kind = entry.get("kind")
+            if kind == "session":
+                found.setdefault("five_hour", bucket)
+            elif kind == "weekly_all":
+                found.setdefault("weekly", bucket)
+            elif kind == "weekly_scoped" and "fable" in cls._scope_text(entry.get("scope")):
+                if fable_rank < 2:
+                    found["weekly_fable"] = bucket
+                    fable_rank = 2
+
+        quotas = []
+        for key in ("five_hour", "weekly", "weekly_fable"):
+            bucket = found.get(key)
+            if bucket is None:
+                continue
+            percent = max(0.0, min(100.0, float(bucket["utilization"])))
+            quotas.append(
+                QuotaWindow(
+                    key=key,
+                    label=USAGE_LABELS[key],
+                    used_percent=percent,
+                    unit="percent",
+                    window_minutes=5 * 60 if key == "five_hour" else 7 * 24 * 60,
+                    resets_at=cls._parse_iso(bucket.get("resets_at")),
+                )
+            )
+        return quotas
+
+    @staticmethod
+    def _scope_text(scope: Any) -> str:
+        """All strings inside a limit's scope, lowercased, e.g. the model name."""
+
+        if isinstance(scope, dict):
+            return " ".join(ClaudeBridgeCollector._scope_text(value) for value in scope.values())
+        if isinstance(scope, list):
+            return " ".join(ClaudeBridgeCollector._scope_text(value) for value in scope)
+        return scope.lower() if isinstance(scope, str) else ""
+
+    @staticmethod
+    def _parse_iso(value: Any) -> datetime | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    # -- CLI fallback -----------------------------------------------------------------
 
     @staticmethod
     def _version_sort_key(path: Path) -> tuple:
@@ -233,7 +428,7 @@ class ClaudeBridgeCollector(Collector):
                 reset_at = cls._parse_reset(
                     reset_match.group("reset"), reset_match.group("zone"), now=now
                 )
-            label = "5시간 사용량" if key == "five_hour" else "주간 사용량"
+            label = USAGE_LABELS[key]
             window_minutes = 5 * 60 if key == "five_hour" else 7 * 24 * 60
             quotas.append(
                 QuotaWindow(

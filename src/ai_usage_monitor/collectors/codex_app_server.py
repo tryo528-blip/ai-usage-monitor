@@ -80,7 +80,13 @@ class CodexAppServerCollector(Collector):
             add(shutil.which(name))
 
         for extra in (
-            Path.home() / "AppData" / "Local" / "Programs" / "OpenAI" / "Codex" / "bin"
+            Path.home()
+            / "AppData"
+            / "Local"
+            / "Programs"
+            / "OpenAI"
+            / "Codex"
+            / "bin"
             / "codex.exe",
             Path.home() / ".local" / "bin" / "codex",
         ):
@@ -172,9 +178,7 @@ class CodexAppServerCollector(Collector):
                 process.wait(timeout=2)
 
     @staticmethod
-    def _send_app_server_message(
-        process: subprocess.Popen[str], message: dict[str, Any]
-    ) -> None:
+    def _send_app_server_message(process: subprocess.Popen[str], message: dict[str, Any]) -> None:
         if process.stdin is None:
             raise RuntimeError("Codex app-server stdin unavailable")
         process.stdin.write(json.dumps(message, separators=(",", ":")) + "\n")
@@ -192,9 +196,7 @@ class CodexAppServerCollector(Collector):
             try:
                 message = messages.get(timeout=remaining)
             except queue.Empty as exc:
-                raise TimeoutError(
-                    f"Codex app-server request {request_id} timed out"
-                ) from exc
+                raise TimeoutError(f"Codex app-server request {request_id} timed out") from exc
             if message.get("id") != request_id:
                 continue
             if "error" in message:
@@ -246,13 +248,9 @@ class CodexAppServerCollector(Collector):
         return []
 
     @staticmethod
-    def _unexpired_quotas(
-        quota_windows: list[QuotaWindow], *, now: datetime
-    ) -> list[QuotaWindow]:
+    def _unexpired_quotas(quota_windows: list[QuotaWindow], *, now: datetime) -> list[QuotaWindow]:
         return [
-            quota
-            for quota in quota_windows
-            if quota.resets_at is None or quota.resets_at > now
+            quota for quota in quota_windows if quota.resets_at is None or quota.resets_at > now
         ]
 
     @staticmethod

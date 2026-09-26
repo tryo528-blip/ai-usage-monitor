@@ -4,14 +4,26 @@ A local Windows desktop dashboard for monitoring AI provider usage limits, balan
 
 ## Features
 
-- Codex live local app-server rate limits, Grok weekly usage bridge, Claude 5-hour usage bridge,
-  AntyG (Google Antigravity/Gemini) quota bridge, plus DeepSeek official HTTP API
-- Settings can select which provider/model cards are shown. AntyG reads Gemini quota and any
-  credits embedded in the same response from the signed-in Google Antigravity CLI (`agy`);
-  Z.AI and KIMI3 remain selectable until their collectors are added.
+- Cards use two-character codes: provider letter + window (`5` = five hours, `W` = weekly)
+
+  | Code | Source |
+  |---|---|
+  | `C5` / `CW` / `FW` | Claude 5h / Claude weekly / Fable weekly (Claude CLI `/usage`) |
+  | `G5` / `GW` | Codex 5h / weekly (local `codex app-server`) |
+  | `GR` | Grok weekly (CLI auth + billing endpoints) |
+  | `A5` / `AW` | Antigravity (Gemini) 5h / weekly (`agy` CLI) |
+  | `OR` | OpenRouter balance (Management Key) |
+
+- Main window: ring-gauge cards. Hue identifies the provider, the clockwise arc shows the
+  remaining quota, and the number turns amber/red at 20%/5% remaining.
+- Windows taskbar readout: a slim pill placed on the taskbar shows up to three providers in one
+  line, e.g. `C5 90  CW 95  FW 99` (remaining %, always two digits: 100 reads `99`, 7 reads
+  `07`). The default is `C5` · `CW` · `FW`; change it in Settings → `작업 표시줄`. Drag it
+  sideways to move it (the position is remembered); click to open/hide the window; right-click
+  for refresh, settings and quit. It hides while a full-screen app is in front. With the readout
+  on, the window's close button only hides the window.
 - Keyring-backed secret storage on Windows
 - SQLite history retention
-- Basic PySide6 desktop app shell with independent refresh workers
 
 ## Development setup
 
@@ -21,6 +33,20 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
 ```
+
+## Install (build + start at login)
+
+Double-click `install.bat` (uses PowerShell 7 when present, else Windows PowerShell), or run:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+This rebuilds both executables, installs them to `%LOCALAPPDATA%\Programs\AIUsageMonitor`,
+removes old copies from the desktop, and adds a Startup shortcut that launches with `--hidden`
+(only the taskbar readout appears at login). Running it again updates in place. Remove with
+`install.bat -Uninstall`; settings and history in `%APPDATA%\AIUsageMonitor` are kept.
+Launching the app while it is already running brings the existing window forward.
 
 ## Run
 
@@ -41,12 +67,21 @@ ruff format --check .
 - No production credentials are stored in the repository.
 - Codex usage reads live rate limits from the signed-in local `codex app-server`. Local session
   snapshots are a fallback, and already-expired quota windows are ignored.
-- Claude usage reads the fixed Claude CLI config root `C:\Users\sswce\.claude` by running hidden
-  `/usage` and parsing the session/week percentages and reset times.
+- Claude usage first reads the same data as claude.ai Settings → Usage from
+  `api.anthropic.com/api/oauth/usage`, using the Claude Code login token in
+  `C:\Users\sswce\.claude\.credentials.json` (sent only to Anthropic, never stored or shown).
+  When the token is missing or expired it falls back to running hidden `claude -p /usage` and
+  parsing the English or Korean session/week/Fable lines.
+- `python -m ai_usage_monitor --claude-raw` prints the raw usage API JSON and CLI output, to
+  check which bucket holds the Fable weekly limit.
 - Grok usage reads the fixed CLI auth file `C:\Users\sswce\.grok\auth.json` and polls authenticated
   Grok billing endpoints. The token is never displayed or stored in this repository.
 - Settings provides `Claude 인증` (`claude auth login`) and `Grok 인증` (`grok login`) buttons.
 - AntyG usage reads the local `agy -p /usage --output-format json` command. Sign in to
   Antigravity once before refreshing the card. A separate `/credits` request is intentionally
   skipped because credits are optional and should not delay or mark the quota cards critical.
+- Fable weekly (`FW`) is any usage-API bucket whose key mentions `fable`, or the `이번 주 Fable` /
+  `Current week (Fable …)` line in CLI output.
+- Windows 11 has no API for adding text to the taskbar, so the readout is an always-on-top
+  window positioned over it that re-asserts itself twice a second.
 - Automatic refresh runs every 10 minutes. Claude percentages come from the CLI `/usage` output.
