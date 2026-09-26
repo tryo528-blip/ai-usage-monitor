@@ -158,6 +158,8 @@ def get_visible_provider_ids(settings: Mapping[str, object]) -> tuple[str, ...]:
 TASKBAR_PROVIDERS_SETTING = "taskbar_providers"
 # Horizontal position of the taskbar readout, in pixels from the taskbar's left edge.
 TASKBAR_OFFSET_SETTING = "taskbar_offset_x"
+# "embed" (child of the Windows taskbar) or "overlay" (always-on-top window).
+TASKBAR_MODE_SETTING = "taskbar_mode"
 MAX_TASKBAR_PROVIDERS = 3
 
 

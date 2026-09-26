@@ -1,14 +1,19 @@
 """A slim readout that sits on the Windows taskbar.
 
-Windows 11 has no API for adding text to the taskbar, so this is a small
-frameless, always-on-top tool window placed inside the taskbar strip. It shows
-up to three providers in one line, e.g. ``C5 90  CW 95  FW 99``: the code in the
-provider's color, the remaining percentage (always two digits) in white or the
-warning color. Drag it sideways to move it; the position is remembered.
+It shows up to three providers in one line, e.g. ``C5 90  CW 95  FW 99``: the
+code in the provider's color, the remaining percentage (always two digits) in
+white or the warning color. Drag it sideways to move it; the position is
+remembered.
 
-Clicking the taskbar raises the taskbar above every other window, so on
-Windows the bar re-asserts "topmost" twice a second. It hides itself while a
-full-screen app (game, video) is in front.
+Windows 11 has no API for adding text to the taskbar, so there are two modes,
+switchable from the right-click menu:
+
+* ``embed`` (default on Windows): the bar becomes a child window of the taskbar
+  itself (``Shell_TrayWnd``), the approach TrafficMonitor uses. It then moves,
+  hides and stacks with the taskbar. If Explorer restarts, it re-attaches.
+* ``overlay``: a frameless always-on-top tool window placed over the taskbar
+  that re-asserts "topmost" twice a second and hides for full-screen apps. The
+  Windows 11 taskbar can still cover it while another app is active.
 """
 
 from __future__ import annotations
@@ -17,7 +22,7 @@ import sys
 from typing import TYPE_CHECKING, Callable
 
 from PySide6.QtCore import QObject, QPoint, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter
+from PySide6.QtGui import QColor, QFont, QFontMetricsF, QGuiApplication, QPainter, QWindow
 from PySide6.QtWidgets import QMenu, QWidget
 
 from . import theme
@@ -35,6 +40,9 @@ _CODE_GAP = 4
 _PILL_HEIGHT_RATIO = 0.7
 # Default spot: just right of the Windows 11 weather widget on the left.
 DEFAULT_OFFSET_X = 140
+MODE_EMBED = "embed"
+MODE_OVERLAY = "overlay"
+_MODE_LABELS = {MODE_EMBED: "작업 표시줄에 붙이기", MODE_OVERLAY: "작업 표시줄 위에 띄우기"}
 
 
 def taskbar_rect(screen_geometry: QRect, available: QRect) -> QRect:
@@ -71,6 +79,7 @@ class _Item:
 class TaskbarBar(QWidget):
     clicked = Signal()
     moved = Signal(int)
+    mode_changed = Signal(str)
 
     def __init__(
         self,
@@ -80,6 +89,7 @@ class TaskbarBar(QWidget):
         on_settings: Callable[[], None],
         on_quit: Callable[[], None],
         offset_x: int = DEFAULT_OFFSET_X,
+        mode: str = MODE_EMBED,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(None)
@@ -87,18 +97,17 @@ class TaskbarBar(QWidget):
             # Lifetime only; the bar stays a top-level window.
             parent.destroyed.connect(self.deleteLater)
         self.setWindowTitle("AI Usage Taskbar")
-        self.setWindowFlags(
-            Qt.WindowType.Tool
-            | Qt.WindowType.FramelessWindowHint
-            | Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.WindowDoesNotAcceptFocus
-        )
+        self.setWindowFlags(_OVERLAY_FLAGS)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         self.items: dict[str, _Item] = {}
         self.offset_x = offset_x
+        self.mode = mode if mode in _MODE_LABELS else MODE_EMBED
+        self._host: QWindow | None = None
+        self._host_hwnd = 0
+        self._backdrop = QColor("#f0f0f0")
         self._press_pos: QPoint | None = None
         self._dragged = False
         self.clicked.connect(on_toggle_window)
@@ -107,6 +116,8 @@ class TaskbarBar(QWidget):
         self.menu.addAction("열기 / 숨기기", on_toggle_window)
         self.menu.addAction("새로고침", on_refresh)
         self.menu.addAction("설정", on_settings)
+        self.mode_action = self.menu.addAction("", self._toggle_mode)
+        self._update_mode_action()
         self.menu.addSeparator()
         self.menu.addAction("종료", on_quit)
 
@@ -130,8 +141,7 @@ class TaskbarBar(QWidget):
             self.items[provider_id] = _Item("", "--", theme.DEFAULT_ACCENT, AlertLevel.MUTED, "")
             self.update_card(provider_id, cards[provider_id])
         if self.items:
-            self.place()
-            self.show()
+            self._apply_mode()
             self._keep_on_top.start()
         else:
             self.hide_all()
@@ -153,6 +163,45 @@ class TaskbarBar(QWidget):
     def hide_all(self) -> None:
         self._keep_on_top.stop()
         self.hide()
+
+    @property
+    def embedded(self) -> bool:
+        return self._host is not None
+
+    def set_mode(self, mode: str) -> None:
+        if mode not in _MODE_LABELS or mode == self.mode:
+            return
+        self.mode = mode
+        self._update_mode_action()
+        if self.items:
+            self._apply_mode()
+
+    def _toggle_mode(self) -> None:
+        self.set_mode(MODE_OVERLAY if self.mode == MODE_EMBED else MODE_EMBED)
+        self.mode_changed.emit(self.mode)
+
+    def _update_mode_action(self) -> None:
+        other = MODE_OVERLAY if self.mode == MODE_EMBED else MODE_EMBED
+        self.mode_action.setText(f"표시 방식 바꾸기 → {_MODE_LABELS[other]}")
+
+    def _apply_mode(self) -> None:
+        self.hide()
+        taskbar = _find_taskbar() if self.mode == MODE_EMBED and _IS_WINDOWS else 0
+        if taskbar:
+            self.setWindowFlags(_EMBED_FLAGS)
+            self.winId()  # create the native window before re-parenting it
+            self._host = QWindow.fromWinId(taskbar)
+            self._host_hwnd = taskbar
+            self.windowHandle().setParent(self._host)
+            self._backdrop = QColor(_taskbar_backdrop())
+        else:
+            if self._host is not None and self.windowHandle() is not None:
+                self.windowHandle().setParent(None)
+            self._host = None
+            self._host_hwnd = 0
+            self.setWindowFlags(_OVERLAY_FLAGS)
+        self.place()
+        self.show()
 
     def text(self) -> str:
         return "  ".join(f"{item.code} {item.value}" for item in self.items.values())
@@ -185,8 +234,12 @@ class TaskbarBar(QWidget):
         width = round(self._content_width())
         max_offset = max(0, strip.width() - width)
         self.offset_x = max(0, min(self.offset_x, max_offset))
-        top = strip.top() + (strip.height() - height) // 2
-        self.setGeometry(strip.left() + self.offset_x, top, width, height)
+        top = (strip.height() - height) // 2
+        if self.embedded:
+            # Child of the taskbar: coordinates are relative to it.
+            self.setGeometry(self.offset_x, top, width, height)
+        else:
+            self.setGeometry(strip.left() + self.offset_x, strip.top() + top, width, height)
 
     # -- painting ------------------------------------------------------------
 
@@ -194,6 +247,10 @@ class TaskbarBar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        if self.embedded:
+            # A child window cannot be see-through, so fill the corners around
+            # the pill with the taskbar's own color.
+            painter.fillRect(self.rect(), self._backdrop)
         rect = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
         radius = rect.height() / 2
         painter.setPen(QColor(theme.BORDER))
@@ -259,6 +316,15 @@ class TaskbarBar(QWidget):
         if not _IS_WINDOWS or not self.items:
             return
         try:
+            if self.mode == MODE_EMBED:
+                taskbar = _find_taskbar()
+                if taskbar != self._host_hwnd:
+                    # Explorer restarted (new taskbar) or embedding had failed.
+                    self._apply_mode()
+                    return
+                if self.embedded:
+                    _raise_child(int(self.winId()))
+                    return
             if _foreground_is_fullscreen(self.screen().geometry()):
                 if self.isVisible():
                     self.hide()
@@ -270,12 +336,52 @@ class TaskbarBar(QWidget):
             pass
 
 
+_OVERLAY_FLAGS = (
+    Qt.WindowType.Tool
+    | Qt.WindowType.FramelessWindowHint
+    | Qt.WindowType.WindowStaysOnTopHint
+    | Qt.WindowType.WindowDoesNotAcceptFocus
+)
+_EMBED_FLAGS = Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowDoesNotAcceptFocus
+_SWP_KEEP = 0x0001 | 0x0002 | 0x0010  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+
+
+def _find_taskbar() -> int:
+    if not _IS_WINDOWS:
+        return 0
+    import ctypes
+
+    return int(ctypes.windll.user32.FindWindowW("Shell_TrayWnd", None) or 0)
+
+
+def _raise_child(hwnd: int) -> None:
+    import ctypes
+
+    hwnd_top = 0
+    ctypes.windll.user32.SetWindowPos(hwnd, hwnd_top, 0, 0, 0, 0, _SWP_KEEP)
+
+
+def _taskbar_backdrop() -> str:
+    """Approximate Windows 11 taskbar color for the current light/dark theme."""
+
+    try:
+        import winreg
+
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+        ) as key:
+            light, _ = winreg.QueryValueEx(key, "SystemUsesLightTheme")
+    except OSError:
+        light = 0
+    return "#eeeeee" if light else "#1c1c1c"
+
+
 def _set_topmost(hwnd: int) -> None:
     import ctypes
 
     hwnd_topmost = -1
-    flags = 0x0001 | 0x0002 | 0x0010  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-    ctypes.windll.user32.SetWindowPos(hwnd, hwnd_topmost, 0, 0, 0, 0, flags)
+    ctypes.windll.user32.SetWindowPos(hwnd, hwnd_topmost, 0, 0, 0, 0, _SWP_KEEP)
 
 
 def _foreground_is_fullscreen(screen: QRect) -> bool:
