@@ -121,9 +121,7 @@ def test_antigravity_parser_prefers_bucket_window_over_group_description() -> No
                 "groups": [
                     {
                         "name": "Gemini Models",
-                        "description": (
-                            "Models share a weekly limit and a 5-hour limit."
-                        ),
+                        "description": ("Models share a weekly limit and a 5-hour limit."),
                         "buckets": [
                             {
                                 "id": "gemini-weekly",

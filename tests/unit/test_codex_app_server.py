@@ -123,9 +123,7 @@ def test_codex_collector_prefers_live_app_server_rate_limits(tmp_path, monkeypat
     snapshot = CodexAppServerCollector().collect()
 
     assert snapshot.status == ProviderStatus.OK
-    assert [(quota.key, quota.used_percent) for quota in snapshot.quota_windows] == [
-        ("weekly", 9)
-    ]
+    assert [(quota.key, quota.used_percent) for quota in snapshot.quota_windows] == [("weekly", 9)]
 
 
 def test_codex_parser_accepts_official_app_server_field_names() -> None:
