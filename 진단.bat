@@ -40,5 +40,8 @@ echo.
 echo --- running the monitor CLI ---
 "C:\marco\ai_usage_monitoring\dist\AIUsageMonitor-cli.exe" --print
 echo.
+echo --- Claude raw usage (Fable 확인용) ---
+"C:\marco\ai_usage_monitoring\dist\AIUsageMonitor-cli.exe" --claude-raw
+echo.
 echo ===============================================
 pause

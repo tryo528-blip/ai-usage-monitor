@@ -198,3 +198,119 @@ def test_claude_usage_handles_empty_cli_output(monkeypatch, tmp_path) -> None:
 
     assert snapshot.status == ProviderStatus.ERROR
     assert snapshot.error_code == "CLAUDE_USAGE_PARSE_ERROR"
+
+
+def test_usage_api_json_maps_session_week_and_any_fable_bucket() -> None:
+    data = {
+        "five_hour": {"utilization": 30.0, "resets_at": "2026-09-26T05:20:00+00:00"},
+        "seven_day": {"utilization": 17, "resets_at": "2026-09-27T13:00:00Z"},
+        "seven_day_opus": None,
+        "seven_day_fable": {"utilization": 0, "resets_at": "2026-09-27T13:00:00Z"},
+        "extra_usage": {"is_enabled": False},
+    }
+
+    quotas = ClaudeBridgeCollector._parse_usage_json(data)
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 30.0),
+        ("weekly", 17.0),
+        ("weekly_fable", 0.0),
+    ]
+    assert quotas[0].resets_at == datetime(2026, 9, 26, 5, 20, tzinfo=timezone.utc)
+    assert quotas[2].label == "Fable 주간 사용량"
+
+
+def test_usage_api_json_finds_nested_fable_bucket() -> None:
+    data = {
+        "five_hour": {"utilization": 5},
+        "seven_day": {"utilization": 9},
+        "model_limits": {"Fable": {"utilization": 41, "resets_at": None}},
+    }
+
+    quotas = ClaudeBridgeCollector._parse_usage_json(data)
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 5.0),
+        ("weekly", 9.0),
+        ("weekly_fable", 41.0),
+    ]
+
+
+def test_collect_prefers_usage_api_over_cli(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(
+        ClaudeBridgeCollector,
+        "fetch_usage_json",
+        classmethod(
+            lambda cls, now: {
+                "five_hour": {"utilization": 30},
+                "seven_day": {"utilization": 17},
+                "seven_day_fable": {"utilization": 0},
+            }
+        ),
+    )
+
+    def fail_cli() -> str:
+        raise AssertionError("CLI must not run when the API answered")
+
+    monkeypatch.setattr(ClaudeBridgeCollector, "_run_usage", staticmethod(fail_cli))
+
+    snapshot = ClaudeBridgeCollector().collect()
+
+    assert snapshot.status == ProviderStatus.OK
+    assert [quota.key for quota in snapshot.quota_windows] == [
+        "five_hour",
+        "weekly",
+        "weekly_fable",
+    ]
+
+
+def test_collect_falls_back_to_cli_without_api(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(
+        ClaudeBridgeCollector, "fetch_usage_json", classmethod(lambda cls, now: None)
+    )
+    monkeypatch.setattr(ClaudeBridgeCollector, "_run_usage", staticmethod(lambda: USAGE_OUTPUT))
+
+    snapshot = ClaudeBridgeCollector().collect()
+
+    assert [quota.key for quota in snapshot.quota_windows] == ["five_hour", "weekly"]
+
+
+def test_access_token_is_skipped_when_expired(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
+    now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
+    credentials = tmp_path / ".credentials.json"
+
+    credentials.write_text(
+        '{"claudeAiOauth": {"accessToken": "tok", "expiresAt": %d}}'
+        % int((now.timestamp() + 60) * 1000),
+        encoding="utf-8",
+    )
+    assert ClaudeBridgeCollector._read_access_token(now=now) == "tok"
+
+    credentials.write_text(
+        '{"claudeAiOauth": {"accessToken": "tok", "expiresAt": %d}}'
+        % int((now.timestamp() - 60) * 1000),
+        encoding="utf-8",
+    )
+    assert ClaudeBridgeCollector._read_access_token(now=now) is None
+
+
+def test_cli_parser_reads_korean_usage_text() -> None:
+    output = (
+        "현재 세션\n오후 2:20에 재설정\n30% 사용됨\n"
+        "이번 주\n재설정: (일요일) 오후 10:00\n17% 사용됨\n"
+        "이번 주 Fable\n별도 주간 한도 대상: Fable · 재설정: (일요일) 오후 10:00\n0% 사용됨\n"
+    )
+
+    quotas = ClaudeBridgeCollector._parse_usage(
+        output,
+        now=datetime(2026, 9, 26, 3, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 30.0),
+        ("weekly", 17.0),
+        ("weekly_fable", 0.0),
+    ]

@@ -31,7 +31,31 @@ def _format_snapshot(snapshot: UsageSnapshot) -> str:
     return "\n".join(lines)
 
 
+def dump_claude_raw() -> int:
+    """Print what the Claude collector sees, to check the Fable bucket's name."""
+
+    import json
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    print("=== usage API (api.anthropic.com/api/oauth/usage) ===")
+    data = ClaudeBridgeCollector.fetch_usage_json(now=now)
+    if data is None:
+        print("(no response: missing/expired token or request failed)")
+    else:
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    print()
+    print("=== claude -p /usage ===")
+    try:
+        print(ClaudeBridgeCollector._run_usage())
+    except Exception as exc:  # noqa: BLE001 - diagnostics must always finish
+        print(f"(failed: {exc})")
+    return 0
+
+
 def main() -> int:
+    if "--claude-raw" in sys.argv:
+        return dump_claude_raw()
     secret_store = SecretStore()
     collectors = [
         AntigravityCollector(),

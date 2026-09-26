@@ -51,16 +51,21 @@ ruff format --check .
 - No production credentials are stored in the repository.
 - Codex usage reads live rate limits from the signed-in local `codex app-server`. Local session
   snapshots are a fallback, and already-expired quota windows are ignored.
-- Claude usage reads the fixed Claude CLI config root `C:\Users\sswce\.claude` by running hidden
-  `/usage` and parsing the session/week percentages and reset times.
+- Claude usage first reads the same data as claude.ai Settings → Usage from
+  `api.anthropic.com/api/oauth/usage`, using the Claude Code login token in
+  `C:\Users\sswce\.claude\.credentials.json` (sent only to Anthropic, never stored or shown).
+  When the token is missing or expired it falls back to running hidden `claude -p /usage` and
+  parsing the English or Korean session/week/Fable lines.
+- `python -m ai_usage_monitor --claude-raw` prints the raw usage API JSON and CLI output, to
+  check which bucket holds the Fable weekly limit.
 - Grok usage reads the fixed CLI auth file `C:\Users\sswce\.grok\auth.json` and polls authenticated
   Grok billing endpoints. The token is never displayed or stored in this repository.
 - Settings provides `Claude 인증` (`claude auth login`) and `Grok 인증` (`grok login`) buttons.
 - AntyG usage reads the local `agy -p /usage --output-format json` command. Sign in to
   Antigravity once before refreshing the card. A separate `/credits` request is intentionally
   skipped because credits are optional and should not delay or mark the quota cards critical.
-- Fable weekly is read from a `Current week (... Fable ...)` line in Claude `/usage`; the `FW`
-  card shows `N/A` when the CLI does not print that line.
+- Fable weekly (`FW`) is any usage-API bucket whose key mentions `fable`, or the `이번 주 Fable` /
+  `Current week (Fable …)` line in CLI output.
 - Windows 11 hides new tray icons in the overflow (^) menu by default. Drag them onto the
   taskbar, or enable them under Settings → Personalization → Taskbar → Other system tray icons.
 - Automatic refresh runs every 10 minutes. Claude percentages come from the CLI `/usage` output.
