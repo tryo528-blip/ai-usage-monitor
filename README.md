@@ -11,7 +11,11 @@ A local Windows desktop dashboard for monitoring AI provider usage limits, balan
   Z.AI and KIMI3 remain selectable until their collectors are added.
 - Keyring-backed secret storage on Windows
 - SQLite history retention
-- Basic PySide6 desktop app shell with independent refresh workers
+- PySide6 desktop window with ring-gauge cards: hue identifies the provider, the clockwise
+  arc shows the remaining quota, and the number turns amber/red at 20%/5% remaining
+- Up to three providers can be pinned to the Windows taskbar notification area (next to the
+  clock) as live ring-gauge icons. Pick them in Settings → `작업 표시줄`. With tray icons
+  active, the close button hides the window to the tray; use the tray menu's `종료` to quit.
 
 ## Development setup
 
@@ -49,4 +53,6 @@ ruff format --check .
 - AntyG usage reads the local `agy -p /usage --output-format json` command. Sign in to
   Antigravity once before refreshing the card. A separate `/credits` request is intentionally
   skipped because credits are optional and should not delay or mark the quota cards critical.
+- Windows 11 hides new tray icons in the overflow (^) menu by default. Drag them onto the
+  taskbar, or enable them under Settings → Personalization → Taskbar → Other system tray icons.
 - Automatic refresh runs every 10 minutes. Claude percentages come from the CLI `/usage` output.

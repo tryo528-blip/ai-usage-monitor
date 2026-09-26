@@ -66,7 +66,7 @@ def test_main_window_builds_cards(qtbot, tmp_path) -> None:
     window.show()
     qtbot.waitExposed(window)
 
-    titles = [card.title_label.text() for card in window.cards.values()]
+    titles = [card.short_name for card in window.cards.values()]
     assert titles == [
         "CDX-5",
         "CDX-W",
@@ -94,7 +94,7 @@ def test_main_window_builds_cards(qtbot, tmp_path) -> None:
         "Antigravity Weekly",
         "OpenRouter",
     ]
-    visible_titles = [card.title_label.text() for card in window.cards.values() if card.isVisible()]
+    visible_titles = [card.short_name for card in window.cards.values() if card.isVisible()]
     assert visible_titles == titles
     assert titles.index("CLD-W") == titles.index("CLD-5") + 1
     assert titles.index("CDX-W") == titles.index("CDX-5") + 1
@@ -119,16 +119,22 @@ def test_main_window_builds_cards(qtbot, tmp_path) -> None:
     ]
     assert isinstance(window.collector_manager.collectors[-2], AntigravityCollector)
     assert isinstance(window.collector_manager.collectors[-1], OpenRouterCollector)
-    assert window.size().width() == 790
-    assert window.size().height() == 180
-    assert window.refresh_button.text() == "REF"
-    assert window.settings_button.text() == "SET"
-    assert window.refresh_button.size().width() == 42
-    assert window.settings_button.size().width() == 42
-    assert window.refresh_button.size().height() == 32
-    assert window.refresh_button.font().pointSize() == 8
+    # 11 cards of 68px, three same-provider gaps of 5px, seven group gaps of
+    # 12px, and 14px margins on both sides.
+    assert window.size().width() == 11 * 68 + 3 * 5 + 7 * 12 + 2 * 14
+    assert window.size().height() == 172
+    for button in (
+        window.refresh_button,
+        window.settings_button,
+        window.minimize_button,
+        window.close_button,
+    ):
+        assert button.size().width() == button.size().height() == 28
+        assert not button.icon().isNull()
+    assert window.refresh_button.toolTip() == "새로고침"
+    assert window.settings_button.toolTip() == "설정"
     assert window.settings_button.y() == window.refresh_button.y()
-    assert window.subtitle_label.text() == "LOCAL"
+    assert window.title_label.text() == "AI Usage"
     assert window.brand_widget.isVisible()
 
 
@@ -151,7 +157,7 @@ def test_main_window_applies_visible_provider_selection(qtbot, tmp_path) -> None
     qtbot.addWidget(window)
     window.show()
 
-    assert [card.title_label.text() for card in window.cards.values() if card.isVisible()] == [
+    assert [card.short_name for card in window.cards.values() if card.isVisible()] == [
         "GRK",
         "ZAI",
     ]
@@ -159,8 +165,8 @@ def test_main_window_applies_visible_provider_selection(qtbot, tmp_path) -> None
         "grok",
         "zai",
     ]
-    assert window.size().width() == 230
-    assert not window.brand_widget.isVisible()
+    assert window.size().width() == 240
+    assert window.brand_widget.isVisible()
 
     settings_store.save(
         {
@@ -170,7 +176,7 @@ def test_main_window_applies_visible_provider_selection(qtbot, tmp_path) -> None
         }
     )
     assert window._apply_settings() is True
-    assert [card.title_label.text() for card in window.cards.values() if card.isVisible()] == [
+    assert [card.short_name for card in window.cards.values() if card.isVisible()] == [
         "CDX-W",
     ]
     assert [collector.provider_id for collector in window.collector_manager.collectors] == ["codex"]
@@ -194,7 +200,7 @@ def test_main_window_refreshes_card_applies_policy_and_saves_sqlite(qtbot, tmp_p
     window.refresh_all()
     card = window.cards["deepseek"]
     qtbot.waitUntil(
-        lambda: card.value_label.text() == "NO\nCREDIT",
+        lambda: card.value_label.text() == "$0",
         timeout=5000,
     )
 
@@ -266,7 +272,7 @@ def test_settings_dialog_saves_visible_provider_selection(qtbot, tmp_path) -> No
         button.ensurePolished()
         assert button.font().family() == PRETENDARD_FAMILY
         assert not button.font().bold()
-    assert dialog.size().height() == 648
+    assert dialog.size().height() == 744
 
     dialog.provider_checkboxes["grok"].setChecked(True)
     dialog.save_settings()

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, QSize, Qt, QTimer
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -25,6 +27,7 @@ from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.providers import (
     PROVIDER_DEFINITION_BY_ID,
     PROVIDER_DEFINITIONS,
+    get_tray_provider_ids,
     get_visible_provider_ids,
 )
 from ai_usage_monitor.infrastructure.database import UsageDatabase
@@ -33,31 +36,73 @@ from ai_usage_monitor.infrastructure.settings_store import SettingsStore
 from ai_usage_monitor.services.collector_manager import CollectorManager
 from ai_usage_monitor.services.status_policy import determine_status
 
-from .provider_card import ProviderCard
+from . import theme
+from .fonts import pretendard_regular
+from .provider_card import CARD_HEIGHT, CARD_WIDTH, ProviderCard
 from .settings_dialog import SettingsDialog
+from .tray import TrayController
 
-_CARD_WIDTH = 62
-_CARD_HEIGHT = 104
-_CARD_SPACING = 8
+# Cards of one provider (5H and WEEK) sit closer together than cards of
+# different providers, so the row reads as groups rather than a flat list.
+_PAIR_SPACING = 5
+_GROUP_SPACING = 12
 _MARGIN_X = 14
-_WINDOW_HEIGHT = 180
-_EMPTY_WINDOW_HEIGHT = 60
-_REFRESH_WIDTH = 42
-_SETTINGS_WIDTH = 42
-_MIN_WINDOW_WIDTH = 230
-_TITLE_ROW_HEIGHT = 32
-_CONTROL_HEIGHT = 32
+_MARGIN_TOP = 12
+_MARGIN_BOTTOM = 14
+_SECTION_SPACING = 10
+_MIN_WINDOW_WIDTH = 240
+_TITLE_ROW_HEIGHT = 28
+_CONTROL_SIZE = 28
+
+_WINDOW_STYLE = f"""
+#app_frame {{
+    background-color: {theme.BACKGROUND};
+    border: 1px solid {theme.BORDER};
+    border-radius: 18px;
+}}
+QLabel {{ background: transparent; }}
+QLabel#brand_title {{ color: {theme.TEXT}; }}
+QLabel#updated_label {{ color: {theme.TEXT_FAINT}; }}
+QPushButton#icon_action {{
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+}}
+QPushButton#icon_action:hover {{ background-color: {theme.SURFACE_HOVER}; }}
+QPushButton#icon_action:pressed {{ background-color: {theme.BORDER}; }}
+QPushButton#close_action {{
+    background-color: transparent;
+    border: none;
+    border-radius: 8px;
+}}
+QPushButton#close_action:hover {{ background-color: #e5484d; }}
+"""
 
 
-def _window_width(card_count: int) -> int:
-    row = 0
-    if card_count > 0:
-        row = card_count * _CARD_WIDTH + (card_count - 1) * _CARD_SPACING
-    return max(_MIN_WINDOW_WIDTH, row + 2 * _MARGIN_X)
+def _group_of(provider_id: str) -> str:
+    definition = PROVIDER_DEFINITION_BY_ID[provider_id]
+    return definition.collector_id or provider_id
+
+
+def _row_width(provider_ids: tuple[str, ...]) -> int:
+    if not provider_ids:
+        return 0
+    width = len(provider_ids) * CARD_WIDTH
+    for previous, current in zip(provider_ids, provider_ids[1:], strict=False):
+        same_group = _group_of(previous) == _group_of(current)
+        width += _PAIR_SPACING if same_group else _GROUP_SPACING
+    return width
+
+
+def _window_width(provider_ids: tuple[str, ...]) -> int:
+    return max(_MIN_WINDOW_WIDTH, _row_width(provider_ids) + 2 * _MARGIN_X)
 
 
 def _window_height(card_count: int) -> int:
-    return _WINDOW_HEIGHT if card_count else _EMPTY_WINDOW_HEIGHT
+    height = _MARGIN_TOP + _TITLE_ROW_HEIGHT + _MARGIN_BOTTOM
+    if card_count:
+        height += _SECTION_SPACING + CARD_HEIGHT
+    return height
 
 
 class MainWindow(QMainWindow):
@@ -75,17 +120,21 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("AI Usage Monitor")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self._set_font_10()
+        self.setFont(pretendard_regular(10))
         self._drag_position: QPoint | None = None
+        self._quitting = False
 
         self.secret_store = secret_store or SecretStore()
         self.settings_store = settings_store or SettingsStore()
         self.database = database or UsageDatabase(database_path)
         self.startup_refresh = startup_refresh
-        self.selected_provider_ids = get_visible_provider_ids(self.settings_store.load())
+        settings = self.settings_store.load()
+        self.selected_provider_ids = get_visible_provider_ids(settings)
+        self.tray_provider_ids = get_tray_provider_ids(settings)
         self._uses_default_collector_manager = collector_manager is None
 
         self._build_ui()
+        self._build_tray()
         self._build_collectors(collector_manager=collector_manager)
         self._build_timer()
         self._apply_settings()
@@ -101,9 +150,11 @@ class MainWindow(QMainWindow):
         if event.button() != Qt.MouseButton.LeftButton:
             return super().mousePressEvent(event)
 
-        if event.position().y() <= _TITLE_ROW_HEIGHT + 6 and self.childAt(
+        if event.position().y() <= _MARGIN_TOP + _TITLE_ROW_HEIGHT + 4 and self.childAt(
             event.position().toPoint()
         ) not in (
+            self.refresh_button,
+            self.settings_button,
             self.minimize_button,
             self.close_button,
         ):
@@ -124,123 +175,101 @@ class MainWindow(QMainWindow):
         self._drag_position = None
         super().mouseReleaseEvent(event)
 
+    def closeEvent(self, event) -> None:
+        # With gauges in the taskbar, the close button tucks the window away
+        # and the tray menu's "종료" really quits.
+        if not self._quitting and self.tray.active:
+            event.ignore()
+            self.hide()
+            return
+        self.tray.hide_all()
+        super().closeEvent(event)
+        app = QApplication.instance()
+        # App disables quit-on-last-window so hiding to the tray keeps it alive;
+        # an accepted close must then end the event loop explicitly.
+        if app is not None and not app.quitOnLastWindowClosed():
+            app.quit()
+
+    def quit_app(self) -> None:
+        self._quitting = True
+        self.close()
+
+    def toggle_visible(self) -> None:
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+            return
+        self.showNormal()
+        self.raise_()
+        self.activateWindow()
+
     def _build_ui(self) -> None:
         root = QWidget(self)
         root.setObjectName("app_frame")
         root.setFont(self.font())
-        root.setStyleSheet(
-            "#app_frame {"
-            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-            "stop:0 #0b1020, stop:1 #12192d);"
-            "border: 1px solid #293857;"
-            "border-radius: 20px;"
-            "}"
-            "QLabel#brand_title { color: #ebf2ff; }"
-            "QLabel#local_badge {"
-            "color: #73c7ff; background-color: #1f2e4a;"
-            "border-radius: 7px; padding: 1px 6px;"
-            "}"
-            "QPushButton#primary_action {"
-            "background-color: #26344f; color: #f2f6ff;"
-            "border: 1px solid #334664; border-radius: 9px;"
-            "font-weight: bold;"
-            "}"
-            "QPushButton#primary_action:hover { background-color: #344766; }"
-            "QPushButton#window_action {"
-            "background-color: #eef1f6; color: #202735;"
-            "border: 1px solid #cbd3df; border-radius: 9px;"
-            "font-weight: bold;"
-            "}"
-            "QPushButton#window_action:hover { background-color: #ffffff; }"
-            "QPushButton#close_action:hover {"
-            "background-color: #ff6b73; color: #ffffff;"
-            "border-color: #ff6b73;"
-            "}"
-        )
+        root.setStyleSheet(_WINDOW_STYLE)
         layout = QVBoxLayout(root)
-        layout.setContentsMargins(_MARGIN_X, 14, _MARGIN_X, 14)
-        layout.setSpacing(12)
+        layout.setContentsMargins(_MARGIN_X, _MARGIN_TOP, _MARGIN_X, _MARGIN_BOTTOM)
+        layout.setSpacing(_SECTION_SPACING)
 
         header = QWidget(root)
         header.setFixedHeight(_TITLE_ROW_HEIGHT)
         title_row = QHBoxLayout(header)
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(6)
+        title_row.setContentsMargins(2, 0, 0, 0)
+        title_row.setSpacing(2)
 
         self.brand_widget = QWidget(header)
         brand_row = QHBoxLayout(self.brand_widget)
         brand_row.setContentsMargins(0, 0, 0, 0)
         brand_row.setSpacing(7)
-        live_dot = QLabel("●", self.brand_widget)
-        live_dot.setStyleSheet("color: #33e8b8;")
-        live_dot_font = QFont(self.font())
-        live_dot_font.setPointSize(7)
-        live_dot.setFont(live_dot_font)
-        self.title_label = QLabel("AI USAGE", self.brand_widget)
+        self.title_label = QLabel("AI Usage", self.brand_widget)
         self.title_label.setObjectName("brand_title")
-        title_font = QFont(self.font())
-        title_font.setPointSize(9)
-        title_font.setBold(True)
-        self.title_label.setFont(title_font)
-        self.subtitle_label = QLabel("LOCAL", self.brand_widget)
-        self.subtitle_label.setObjectName("local_badge")
-        subtitle_font = QFont(self.font())
-        subtitle_font.setPointSize(6)
-        self.subtitle_label.setFont(subtitle_font)
-        brand_row.addWidget(live_dot)
-        brand_row.addWidget(self.title_label)
-        brand_row.addWidget(self.subtitle_label)
-
-        button_font = QFont(self.font())
-        button_font.setPointSize(8)
-        self.refresh_button = QPushButton("REF", header)
-        self.settings_button = QPushButton("SET", header)
-        self.minimize_button = QPushButton("—", header)
-        self.close_button = QPushButton("×", header)
-        for button in (
-            self.refresh_button,
-            self.settings_button,
-            self.minimize_button,
-            self.close_button,
-        ):
-            button.setFont(button_font)
-            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
-        self.refresh_button.setObjectName("primary_action")
-        self.settings_button.setObjectName("primary_action")
-        self.minimize_button.setObjectName("window_action")
-        self.close_button.setObjectName("close_action")
-        self.close_button.setStyleSheet(
-            "QPushButton {"
-            "background-color: #eef1f6; color: #202735;"
-            "border: 1px solid #cbd3df; border-radius: 9px;"
-            "font-weight: bold;"
-            "}"
-            "QPushButton:hover {"
-            "background-color: #ff6b73; color: #ffffff; border-color: #ff6b73;"
-            "}"
+        self.title_label.setFont(theme.bold_font(self.font(), 10))
+        self.updated_label = QLabel("", self.brand_widget)
+        self.updated_label.setObjectName("updated_label")
+        updated_font = QFont(self.font())
+        updated_font.setPointSize(8)
+        self.updated_label.setFont(updated_font)
+        # Reserve the widest text up front so the header never reflows when
+        # the first timestamp arrives.
+        self.title_label.setFixedWidth(self.title_label.sizeHint().width() + 2)
+        self.updated_label.setFixedWidth(
+            self.updated_label.fontMetrics().horizontalAdvance("00:00 갱신") + 4
         )
-        self.refresh_button.setFixedSize(_REFRESH_WIDTH, _CONTROL_HEIGHT)
-        self.settings_button.setFixedSize(_SETTINGS_WIDTH, _CONTROL_HEIGHT)
-        self.minimize_button.setFixedSize(32, _CONTROL_HEIGHT)
-        self.close_button.setFixedSize(32, _CONTROL_HEIGHT)
-        self.refresh_button.setToolTip("새로고침")
-        self.settings_button.setToolTip("설정")
-        self.minimize_button.setToolTip("최소화")
-        self.close_button.setToolTip("닫기")
+        brand_row.addWidget(self.title_label)
+        brand_row.addWidget(self.updated_label)
+
+        self.refresh_button = QPushButton(header)
+        self.settings_button = QPushButton(header)
+        self.minimize_button = QPushButton(header)
+        self.close_button = QPushButton(header)
+        for button, icon, name, tip in (
+            (self.refresh_button, theme.refresh_icon(), "icon_action", "새로고침"),
+            (self.settings_button, theme.settings_icon(), "icon_action", "설정"),
+            (self.minimize_button, theme.minimize_icon(), "icon_action", "최소화"),
+            (self.close_button, theme.close_icon(), "close_action", "닫기"),
+        ):
+            button.setIcon(icon)
+            button.setIconSize(QSize(16, 16))
+            button.setObjectName(name)
+            button.setToolTip(tip)
+            button.setFixedSize(_CONTROL_SIZE, _CONTROL_SIZE)
+            button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
 
         title_row.addWidget(self.brand_widget)
         title_row.addStretch(1)
         title_row.addWidget(self.refresh_button)
         title_row.addWidget(self.settings_button)
+        title_row.addSpacing(6)
         title_row.addWidget(self.minimize_button)
         title_row.addWidget(self.close_button)
         layout.addWidget(header)
 
         self.cards_container = QWidget(root)
-        self.cards_container.setFixedHeight(108)
+        self.cards_container.setFixedHeight(CARD_HEIGHT)
         self.rows_layout = QHBoxLayout(self.cards_container)
         self.rows_layout.setContentsMargins(0, 0, 0, 0)
-        self.rows_layout.setSpacing(_CARD_SPACING)
+        self.rows_layout.setSpacing(0)
         self.rows_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cards = {
             definition.provider_id: ProviderCard(
@@ -250,15 +279,25 @@ class MainWindow(QMainWindow):
                 quota_fields=definition.quota_fields,
                 omit_missing_quota=definition.omit_missing_quota,
                 balance_display=definition.balance_display,
+                accent=theme.accent_for(definition.provider_id),
             )
             for definition in PROVIDER_DEFINITIONS
         }
-        for card in self.cards.values():
-            card.setFixedSize(_CARD_WIDTH, _CARD_HEIGHT)
         layout.addWidget(self.cards_container)
+        layout.addStretch(1)
 
         self.setCentralWidget(root)
         self._sync_visible_cards()
+
+    def _build_tray(self) -> None:
+        self.tray = TrayController(
+            on_toggle_window=self.toggle_visible,
+            on_refresh=self.refresh_all,
+            on_settings=self._open_settings,
+            on_quit=self.quit_app,
+            parent=self,
+        )
+        self.tray.set_providers(self.tray_provider_ids, self.cards)
 
     def _build_collectors(self, *, collector_manager: CollectorManager | None = None) -> None:
         if collector_manager is None:
@@ -266,8 +305,19 @@ class MainWindow(QMainWindow):
         self.collector_manager = collector_manager
         self.collector_manager.register_callback(self._handle_result)
 
+    @property
+    def tracked_provider_ids(self) -> tuple[str, ...]:
+        """Cards fed by collectors: the visible row plus the tray gauges."""
+
+        tracked = set(self.selected_provider_ids) | set(self.tray_provider_ids)
+        return tuple(
+            definition.provider_id
+            for definition in PROVIDER_DEFINITIONS
+            if definition.provider_id in tracked
+        )
+
     def _build_default_collectors(self) -> list[Collector]:
-        selected = set(self.selected_provider_ids)
+        selected = set(self.tracked_provider_ids)
         collectors = []
         if selected & {"codex", "codex_5h"}:
             collectors.append(CodexAppServerCollector())
@@ -303,15 +353,22 @@ class MainWindow(QMainWindow):
                 card.setParent(None)
                 card.hide()
 
+        previous: str | None = None
         for provider_id in self.selected_provider_ids:
+            if previous is not None:
+                same_group = _group_of(previous) == _group_of(provider_id)
+                self.rows_layout.addSpacing(_PAIR_SPACING if same_group else _GROUP_SPACING)
             card = self.cards[provider_id]
             self.rows_layout.addWidget(card)
             card.show()
+            previous = provider_id
 
         card_count = len(self.selected_provider_ids)
-        self.brand_widget.setVisible(card_count >= 5)
         self.cards_container.setVisible(card_count > 0)
-        self.setFixedSize(_window_width(card_count), _window_height(card_count))
+        self.setFixedSize(
+            _window_width(self.selected_provider_ids),
+            _window_height(card_count),
+        )
 
     def _build_timer(self) -> None:
         self.refresh_timer = QTimer(self)
@@ -321,23 +378,29 @@ class MainWindow(QMainWindow):
     def _apply_settings(self) -> bool:
         settings = self.settings_store.load()
         selected_provider_ids = get_visible_provider_ids(settings)
+        tray_provider_ids = get_tray_provider_ids(settings)
         selection_changed = selected_provider_ids != self.selected_provider_ids
+        tray_changed = tray_provider_ids != self.tray_provider_ids
         self.selected_provider_ids = selected_provider_ids
+        self.tray_provider_ids = tray_provider_ids
         if selection_changed:
             self._sync_visible_cards()
-            if self._uses_default_collector_manager:
-                self.collector_manager.collectors = self._build_default_collectors()
+        if tray_changed:
+            self.tray.set_providers(self.tray_provider_ids, self.cards)
+        if (selection_changed or tray_changed) and self._uses_default_collector_manager:
+            self.collector_manager.collectors = self._build_default_collectors()
 
         enable_auto = bool(settings.get("auto_refresh", True))
         if enable_auto:
             self.refresh_timer.start()
         else:
             self.refresh_timer.stop()
-        return selection_changed
+        return selection_changed or tray_changed
 
     def refresh_all(self) -> None:
-        for provider_id in self.selected_provider_ids:
+        for provider_id in self.tracked_provider_ids:
             self.cards[provider_id].set_loading()
+            self.tray.update(provider_id, self.cards[provider_id])
         self.collector_manager.refresh()
 
     def _open_settings(self) -> None:
@@ -352,13 +415,14 @@ class MainWindow(QMainWindow):
                 self.refresh_all()
 
     def _handle_result(self, result) -> None:
-        cards = [
-            card
-            for key, card in self.cards.items()
-            if key in self.selected_provider_ids
+        tracked = self.tracked_provider_ids
+        provider_ids = [
+            key
+            for key in self.cards
+            if key in tracked
             and (key == result.provider_id or key.startswith(f"{result.provider_id}_"))
         ]
-        if not cards:
+        if not provider_ids:
             return
 
         snapshot = result.snapshot
@@ -366,16 +430,13 @@ class MainWindow(QMainWindow):
         if normalized_status != snapshot.status:
             snapshot = snapshot.model_copy(update={"status": normalized_status})
 
-        for card in cards:
-            card.set_snapshot(snapshot)
+        for provider_id in provider_ids:
+            self.cards[provider_id].set_snapshot(snapshot)
+            self.tray.update(provider_id, self.cards[provider_id])
+        self.updated_label.setText(f"{datetime.now():%H:%M} 갱신")
         try:
             self.database.save_snapshot(snapshot)
         except Exception:
-            for card in cards:
-                card.set_error("SQLite 저장 실패")
-
-    def _set_font_10(self) -> None:
-        font = QFont(self.font())
-        font.setFamily("Noto Sans KR")
-        font.setPointSize(10)
-        self.setFont(font)
+            for provider_id in provider_ids:
+                self.cards[provider_id].set_error("SQLite 저장 실패")
+                self.tray.update(provider_id, self.cards[provider_id])

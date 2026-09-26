@@ -2,13 +2,23 @@ from __future__ import annotations
 
 from datetime import timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from enum import StrEnum
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from ai_usage_monitor.domain.enums import ProviderStatus
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
+
+from . import theme
+from .fonts import pretendard_regular
+from .theme import AlertLevel
+
+CARD_WIDTH = 68
+CARD_HEIGHT = 108
+_RING_SIZE = 54
+_RING_WIDTH = 4.5
 
 _MISSING_KEY_ERROR_CODES = {
     "NOT_CONFIGURED",
@@ -16,6 +26,50 @@ _MISSING_KEY_ERROR_CODES = {
     "KEY_NOT_CONFIGURED",
     "MANAGEMENT_KEY_NOT_CONFIGURED",
 }
+
+
+class RingMode(StrEnum):
+    ARC = "arc"
+    AMOUNT = "amount"
+    UNKNOWN = "unknown"
+
+
+class RingGauge(QWidget):
+    """A circular gauge whose arc length is the remaining share of a quota."""
+
+    def __init__(self, accent: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.accent = accent
+        self.fraction: float | None = None
+        self.mode = RingMode.UNKNOWN
+        self.setFixedSize(_RING_SIZE, _RING_SIZE)
+
+    def set_state(self, mode: RingMode, fraction: float | None = None) -> None:
+        self.mode = mode
+        self.fraction = fraction
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        rect = QRectF(self.rect())
+        if self.mode == RingMode.ARC:
+            theme.draw_ring(painter, rect, self.fraction, self.accent, width=_RING_WIDTH)
+        elif self.mode == RingMode.AMOUNT:
+            # A balance has no ceiling, so it gets a closed, softly tinted ring
+            # instead of an arc that would pretend to be a percentage.
+            tint = QColor(self.accent)
+            tint.setAlpha(110)
+            theme.draw_ring(
+                painter,
+                rect,
+                0,
+                self.accent,
+                width=_RING_WIDTH,
+                track=tint.name(QColor.NameFormat.HexArgb),
+            )
+        else:
+            theme.draw_ring(painter, rect, None, self.accent, width=_RING_WIDTH)
+        painter.end()
 
 
 class ProviderCard(QFrame):
@@ -28,6 +82,7 @@ class ProviderCard(QFrame):
         quota_fields: tuple[tuple[str, str], ...] = (),
         omit_missing_quota: bool = False,
         balance_display: str = "percent",
+        accent: str = theme.DEFAULT_ACCENT,
     ) -> None:
         super().__init__()
         self.short_name = title
@@ -36,40 +91,41 @@ class ProviderCard(QFrame):
         self.quota_fields = quota_fields
         self.omit_missing_quota = omit_missing_quota
         self.balance_display = balance_display
+        self.accent = accent
+        self.level = AlertLevel.MUTED
         self.setObjectName("provider_card")
-        self.setFixedSize(62, 104)
+        self.setFixedSize(CARD_WIDTH, CARD_HEIGHT)
         self.setFrameStyle(QFrame.Shape.NoFrame)
         self.setStyleSheet(
             "QFrame#provider_card {"
-            "background-color: rgba(18, 25, 42, 246);"
-            "border: 1px solid #263654;"
+            f"background-color: {theme.SURFACE};"
+            f"border: 1px solid {theme.BORDER};"
             "border-radius: 14px;"
             "}"
+            f"QFrame#provider_card:hover {{ background-color: {theme.SURFACE_HOVER}; }}"
+            "QLabel { background: transparent; }"
         )
         self.setToolTip(self.full_name)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(6, 7, 6, 7)
+        layout.setContentsMargins(4, 8, 4, 7)
         layout.setSpacing(0)
 
-        heading = QWidget(self)
-        heading.setFixedHeight(14)
-        heading_layout = QHBoxLayout(heading)
-        heading_layout.setContentsMargins(0, 0, 0, 0)
-        heading_layout.setSpacing(3)
-        heading_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.gauge = RingGauge(accent, self)
+        gauge_layout = QVBoxLayout(self.gauge)
+        gauge_layout.setContentsMargins(0, 0, 0, 0)
+        self.value_label = QLabel("···", self.gauge)
+        self.value_label.setWordWrap(True)
+        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.value_label.setToolTip("조회 중")
+        gauge_layout.addWidget(self.value_label)
 
-        self.status_dot = QLabel("●", self)
-        self.status_dot.setFixedSize(7, 14)
-        self.status_dot.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.title_label = QLabel(title)
-        self.title_label.setFixedHeight(14)
-        self.title_label.setWordWrap(False)
+        # The abbreviation's suffix ("-5", "-W") is already spelled out by the
+        # window label below, so the heading shows only the provider stem.
+        self.title_label = QLabel(title.split("-", 1)[0])
+        self.title_label.setFixedHeight(15)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setToolTip(self.full_name)
-        heading_layout.addWidget(self.status_dot)
-        heading_layout.addWidget(self.title_label)
 
         # Keep the long name available to callers, accessibility tools, and old
         # settings data without rendering it on the compact main card.
@@ -77,36 +133,60 @@ class ProviderCard(QFrame):
         self.full_name_label.setToolTip(self.full_name)
         self.full_name_label.hide()
 
-        self.time_label = QLabel("", self)
-        self.time_label.setFixedHeight(9)
-        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self.value_label = QLabel("···", self)
-        self.value_label.setFixedHeight(34)
-        self.value_label.setWordWrap(True)
-        self.value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.value_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.value_label.setToolTip("조회 중")
-
-        self.window_label = QLabel(self._window_label_text(), self)
-        self.window_label.setFixedHeight(10)
+        meta = QWidget(self)
+        meta.setFixedHeight(12)
+        meta_layout = QHBoxLayout(meta)
+        meta_layout.setContentsMargins(0, 0, 0, 0)
+        meta_layout.setSpacing(3)
+        meta_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.window_label = QLabel(self._window_label_text(), meta)
         self.window_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.time_label = QLabel("", meta)
+        self.time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.time_label.hide()
+        meta_layout.addWidget(self.window_label)
+        meta_layout.addWidget(self.time_label)
 
-        layout.addWidget(heading)
-        layout.addWidget(self.time_label)
+        layout.addWidget(self.gauge, 0, Qt.AlignmentFlag.AlignHCenter)
         layout.addStretch(1)
-        layout.addWidget(self.value_label)
-        layout.addStretch(1)
-        layout.addWidget(self.window_label)
+        layout.addWidget(self.title_label)
+        layout.addWidget(meta)
         self._set_font_10()
-        self._apply_status_style(ProviderStatus.OK)
+        self._apply_level(AlertLevel.MUTED)
+
+    # -- public state used by the tray -------------------------------------------------
+
+    @property
+    def fraction(self) -> float | None:
+        return self.gauge.fraction if self.gauge.mode == RingMode.ARC else None
+
+    def compact_value(self) -> str:
+        """The value reduced to what fits inside a 16px tray icon."""
+
+        text = self.value_label.text()
+        if self.gauge.mode == RingMode.ARC and text.endswith("%") and "/" not in text:
+            return text[:-1]
+        if self.gauge.mode == RingMode.AMOUNT:
+            try:
+                return str(int(Decimal(text)))
+            except (ArithmeticError, ValueError):
+                return "$"
+        return "–"
+
+    def summary_text(self) -> str:
+        value = self.value_label.text().replace("\n", " ")
+        details = [self.window_label.text()]
+        if self.time_label.text():
+            details.append(f"{self.time_label.text()} 초기화")
+        return f"{self.full_name}  {value}  ({' · '.join(details)})"
+
+    # -- rendering ----------------------------------------------------------------------
 
     def set_loading(self) -> None:
-        self.time_label.clear()
-        self.value_label.setText("···")
-        self.value_label.setToolTip("조회 중")
-        self._set_value_font(15)
-        self._apply_status_style(ProviderStatus.OK)
+        self._set_time("")
+        self._set_value("···", 13, tooltip="조회 중")
+        self.gauge.set_state(RingMode.UNKNOWN)
+        self._apply_level(AlertLevel.MUTED)
 
     def set_snapshot(self, snapshot: UsageSnapshot) -> None:
         if snapshot.status in {
@@ -117,9 +197,7 @@ class ProviderCard(QFrame):
         }:
             if self.summary_type == "quota" and snapshot.quota_windows:
                 if self._render_quota(snapshot):
-                    self._apply_status_style(snapshot.status)
                     return
-            if self.summary_type == "quota" and snapshot.quota_windows:
                 self.set_no_data(self._reason(snapshot))
                 return
             self.set_error(
@@ -131,7 +209,6 @@ class ProviderCard(QFrame):
 
         if snapshot.status == ProviderStatus.MANUAL or self.summary_type == "manual":
             self._render_manual(snapshot)
-            self._apply_status_style(snapshot.status)
             return
 
         if self.summary_type == "balance":
@@ -141,8 +218,8 @@ class ProviderCard(QFrame):
                     error_code=snapshot.error_code,
                     status=snapshot.status,
                 )
-                return
-        elif not self._render_quota(snapshot):
+            return
+        if not self._render_quota(snapshot):
             if snapshot.quota_windows:
                 self.set_no_data(self._reason(snapshot))
             else:
@@ -151,8 +228,6 @@ class ProviderCard(QFrame):
                     error_code=snapshot.error_code,
                     status=snapshot.status,
                 )
-            return
-        self._apply_status_style(snapshot.status)
 
     def set_error(
         self,
@@ -161,22 +236,20 @@ class ProviderCard(QFrame):
         error_code: str | None = None,
         status: ProviderStatus = ProviderStatus.ERROR,
     ) -> None:
-        self.time_label.clear()
+        self._set_time("")
         if self._is_missing_key(error_code, message):
-            self.value_label.setText("NO\nKEY")
-            self._set_value_font(8)
+            self._set_value("KEY", 9, tooltip=message)
         else:
-            self.value_label.setText("NOT\nCONNECTED")
-            self._set_value_font(6)
-        self.value_label.setToolTip(message)
-        self._apply_status_style(status)
+            self._set_value("OFF", 9, tooltip=message)
+        self.gauge.set_state(RingMode.UNKNOWN)
+        level = AlertLevel.WARNING if status == ProviderStatus.AUTH_REQUIRED else AlertLevel.MUTED
+        self._apply_level(level)
 
     def set_no_data(self, message: str) -> None:
-        self.time_label.clear()
-        self.value_label.setText("NO\nDATA")
-        self.value_label.setToolTip(message)
-        self._set_value_font(8)
-        self._apply_status_style(ProviderStatus.UNAVAILABLE)
+        self._set_time("")
+        self._set_value("N/A", 9, tooltip=message)
+        self.gauge.set_state(RingMode.UNKNOWN)
+        self._apply_level(AlertLevel.MUTED)
 
     def _render_quota(self, snapshot: UsageSnapshot) -> bool:
         if not self.quota_fields:
@@ -184,18 +257,34 @@ class ProviderCard(QFrame):
         summary = self._format_quota(snapshot)
         if summary is None:
             return False
-        self._set_value_font(self._value_point_size(summary))
-        self.value_label.setText(summary)
         tooltip = summary
         balance = self._format_balance(snapshot)
         if balance:
             tooltip = f"{summary}\n{balance}"
-        self.value_label.setToolTip(tooltip)
+        self._set_value(summary, self._value_point_size(summary), tooltip=tooltip)
         has_five_hour_window = any(key == "five_hour" for key, _ in self.quota_fields)
         reset_time = self._format_reset_time(snapshot) if has_five_hour_window else None
-        self.time_label.setText(reset_time or "")
+        self._set_time(reset_time or "")
         self.window_label.setText(self._window_label_text())
+
+        remaining = self._remaining_percents(snapshot)
+        if remaining:
+            # The tightest window is the one that will stop work first.
+            tightest = min(remaining)
+            self.gauge.set_state(RingMode.ARC, tightest / 100)
+            self._apply_level(theme.level_for_remaining(tightest))
+        else:
+            self.gauge.set_state(RingMode.UNKNOWN)
+            self._apply_level(AlertLevel.OK)
         return True
+
+    def _remaining_percents(self, snapshot: UsageSnapshot) -> list[float]:
+        values = []
+        for key, _ in self.quota_fields:
+            quota = self._find_quota(snapshot, key)
+            if quota is not None and quota.used_percent is not None:
+                values.append(max(0.0, min(100.0, 100.0 - quota.used_percent)))
+        return values
 
     def _render_balance(self, snapshot: UsageSnapshot) -> bool:
         if not snapshot.balances:
@@ -204,25 +293,30 @@ class ProviderCard(QFrame):
         amount = balance.remaining if balance.remaining is not None else balance.total
         if amount is None:
             return False
-        self.time_label.clear()
+        self._set_time("")
         if self.balance_display == "amount":
             currency = str(balance.currency).upper()
             self.window_label.setText(currency)
             amount_text = self._format_balance_amount_fixed(amount)
+            tooltip = f"{amount_text} {currency}"
             if amount <= 0:
-                self._set_value_font(8)
-                self.value_label.setText("NO\nCREDIT")
-                self.value_label.setToolTip(f"{amount_text} {currency}")
+                self._set_value("$0", 11, tooltip=tooltip)
+                self.gauge.set_state(RingMode.ARC, 0)
+                self._apply_level(AlertLevel.CRITICAL)
                 return True
-            self._set_value_font(12)
-            self.value_label.setText(amount_text)
-            self.value_label.setToolTip(f"{amount_text} {currency}")
+            self._set_value(amount_text, 10 if len(amount_text) <= 5 else 8, tooltip=tooltip)
+            self.gauge.set_state(RingMode.AMOUNT)
+            self._apply_level(AlertLevel.OK)
             return True
         self.window_label.setText("BAL")
         if amount <= 0:
-            self._set_value_font(8)
-            self.value_label.setText("NO\nCREDIT")
-            self.value_label.setToolTip(f"{self._format_balance_amount(amount)} {balance.currency}")
+            self._set_value(
+                "$0",
+                11,
+                tooltip=f"{self._format_balance_amount(amount)} {balance.currency}",
+            )
+            self.gauge.set_state(RingMode.ARC, 0)
+            self._apply_level(AlertLevel.CRITICAL)
             return True
         if balance.total is not None and balance.used is not None and balance.total > 0:
             percent = float(amount / balance.total * 100)
@@ -230,20 +324,20 @@ class ProviderCard(QFrame):
             percent = float(amount) / 20 * 100
         percent = max(0.0, min(100.0, percent))
         text = f"{self._format_percent(percent)}%"
-        self._set_value_font(15)
-        self.value_label.setText(text)
         amount_text = self._format_balance_amount(amount)
-        self.value_label.setToolTip(
-            f"{text.replace(chr(10), ' ')} · {amount_text} {balance.currency}"
+        self._set_value(
+            text, self._value_point_size(text), tooltip=f"{text} · {amount_text} {balance.currency}"
         )
+        self.gauge.set_state(RingMode.ARC, percent / 100)
+        self._apply_level(theme.level_for_remaining(percent))
         return True
 
     def _render_manual(self, snapshot: UsageSnapshot) -> None:
-        self.time_label.clear()
-        self._set_value_font(6)
-        self.value_label.setText("NOT\nCONNECTED")
-        self.value_label.setToolTip(snapshot.message or "사용량 연동 준비 중")
+        self._set_time("")
+        self._set_value("OFF", 9, tooltip=snapshot.message or "사용량 연동 준비 중")
         self.window_label.setText("MAN")
+        self.gauge.set_state(RingMode.UNKNOWN)
+        self._apply_level(AlertLevel.MUTED)
 
     def _window_label_text(self) -> str:
         if self.summary_type == "balance":
@@ -256,6 +350,15 @@ class ProviderCard(QFrame):
         if "five_hour" in keys:
             return "5H"
         return "WEEK"
+
+    def _set_value(self, text: str, point_size: int, *, tooltip: str) -> None:
+        self._set_value_font(point_size)
+        self.value_label.setText(text)
+        self.value_label.setToolTip(tooltip)
+
+    def _set_time(self, text: str) -> None:
+        self.time_label.setText(text)
+        self.time_label.setVisible(bool(text))
 
     def _format_quota(self, snapshot: UsageSnapshot) -> str | None:
         quotas = {key: self._find_quota(snapshot, key) for key, _ in self.quota_fields}
@@ -379,57 +482,38 @@ class ProviderCard(QFrame):
         return cls._format_percent(max(0.0, min(100.0, 100.0 - used_percent)))
 
     def _set_font_10(self) -> None:
-        font = QFont(self.font())
-        font.setFamily("Noto Sans KR")
-        font.setPointSize(10)
+        font = pretendard_regular(10)
         self.setFont(font)
-        card_font = QFont(font)
-        card_font.setPointSize(8)
-        card_font.setBold(True)
-        self.title_label.setFont(card_font)
+        self.title_label.setFont(theme.bold_font(font, 8))
         small_font = QFont(font)
         small_font.setPointSize(7)
         self.full_name_label.setFont(small_font)
         self.time_label.setFont(small_font)
         self.window_label.setFont(small_font)
-        dot_font = QFont(font)
-        dot_font.setPointSize(6)
-        self.status_dot.setFont(dot_font)
-        self._set_value_font(15)
+        self._set_value_font(13)
 
     def _set_value_font(self, point_size: int) -> None:
-        value_font = QFont(self.font())
-        value_font.setPointSize(point_size)
-        value_font.setBold(True)
-        self.value_label.setFont(value_font)
+        self.value_label.setFont(theme.bold_font(self.font(), point_size))
 
-    def _apply_status_style(self, status: ProviderStatus) -> None:
-        palette = {
-            ProviderStatus.OK: "#33e8b8",
-            ProviderStatus.WARNING: "#ffbf4d",
-            ProviderStatus.CRITICAL: "#ff6b73",
-            ProviderStatus.AUTH_REQUIRED: "#ff9f43",
-            ProviderStatus.UNAVAILABLE: "#8596b2",
-            ProviderStatus.ERROR: "#ff6b73",
-            ProviderStatus.STALE: "#ffbf4d",
-            ProviderStatus.MANUAL: "#8596b2",
-        }
-        color = palette.get(status, "#8596b2")
-        self.status_dot.setStyleSheet(f"color: {color};")
-        self.title_label.setStyleSheet(f"color: {color};")
-        self.time_label.setStyleSheet("color: #788cb0;")
-        self.window_label.setStyleSheet("color: #788cb0;")
-        self.value_label.setStyleSheet("color: #edf5ff;")
+    def _apply_level(self, level: AlertLevel) -> None:
+        self.level = level
+        title_color = theme.TEXT_MUTED if level == AlertLevel.MUTED else self.accent
+        self.title_label.setStyleSheet(f"color: {title_color};")
+        self.window_label.setStyleSheet(f"color: {theme.TEXT_FAINT};")
+        self.time_label.setStyleSheet(f"color: {theme.TEXT_MUTED};")
+        self.value_label.setStyleSheet(f"color: {theme.LEVEL_TEXT_COLORS[level]};")
 
     @staticmethod
     def _value_point_size(text: str) -> int:
         if "\n" in text:
             return 7
         if "/" in text:
-            return 9
-        if len(text) > 8:
+            return 7
+        if len(text) > 4:
             return 8
-        return 15
+        if len(text) == 4:
+            return 11
+        return 13
 
     @staticmethod
     def _is_missing_key(error_code: str | None, message: str) -> bool:

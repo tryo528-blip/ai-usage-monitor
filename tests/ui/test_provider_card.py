@@ -52,9 +52,9 @@ def test_provider_card_shows_requested_quota_fields_and_reset_time(qtbot) -> Non
     assert card.time_label.text() == "13:00"
     assert card.font().pointSize() == 10
     assert card.title_label.font().pointSize() == 8
-    assert card.value_label.font().pointSize() == 9
-    assert card.size().width() == 62
-    assert card.size().height() == 104
+    assert card.value_label.font().pointSize() == 7
+    assert card.size().width() == 68
+    assert card.size().height() == 108
 
 
 def test_provider_card_shows_only_unavailable_reason_when_data_is_missing(qtbot) -> None:
@@ -78,7 +78,7 @@ def test_provider_card_shows_only_unavailable_reason_when_data_is_missing(qtbot)
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "NOT\nCONNECTED"
+    assert card.value_label.text() == "OFF"
     assert card.value_label.toolTip() == message
 
 
@@ -104,7 +104,7 @@ def test_provider_card_shows_usage_as_percent_when_source_provides_percent(qtbot
     card.set_snapshot(snapshot)
 
     assert card.value_label.text() == "63%"
-    assert card.value_label.font().pointSize() == 15
+    assert card.value_label.font().pointSize() == 13
 
 
 def test_provider_card_compacts_five_hour_and_weekly_percentages(qtbot) -> None:
@@ -186,8 +186,8 @@ def test_provider_card_shows_placeholder_for_unconnected_model(qtbot) -> None:
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "NOT\nCONNECTED"
-    assert card.value_label.font().pointSize() == 6
+    assert card.value_label.text() == "OFF"
+    assert card.value_label.font().pointSize() == 9
     assert card.value_label.toolTip() == "사용량 연동 준비 중"
 
 
@@ -234,7 +234,7 @@ def test_provider_card_shows_no_credit_on_zero_balance(qtbot) -> None:
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "NO\nCREDIT"
+    assert card.value_label.text() == "$0"
     assert card.window_label.text() == "BAL"
     assert card.full_name_label.isHidden()
     assert card.toolTip() == "DeepSeek"
@@ -268,7 +268,7 @@ def test_openrouter_card_shows_remaining_amount_with_two_decimals(qtbot) -> None
     card.set_snapshot(snapshot)
 
     assert card.value_label.text() == "74.75"
-    assert card.value_label.font().pointSize() == 12
+    assert card.value_label.font().pointSize() == 10
     assert card.window_label.text() == "USD"
     assert card.value_label.toolTip() == "74.75 USD"
 
@@ -289,7 +289,7 @@ def test_provider_card_distinguishes_missing_key_from_connection_error(qtbot) ->
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "NO\nKEY"
+    assert card.value_label.text() == "KEY"
     assert card.value_label.toolTip() == "DeepSeek API 키가 없습니다."
 
 
@@ -313,4 +313,4 @@ def test_provider_card_shows_no_data_when_requested_window_is_missing(qtbot) -> 
 
     card.set_snapshot(snapshot)
 
-    assert card.value_label.text() == "NO\nDATA"
+    assert card.value_label.text() == "N/A"

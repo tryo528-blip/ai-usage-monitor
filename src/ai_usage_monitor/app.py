@@ -10,6 +10,9 @@ class App:
     def __init__(self) -> None:
         self.logger = configure_logging()
         self.app = QApplication([])
+        # The window may hide into the taskbar tray; MainWindow decides when
+        # closing actually quits.
+        self.app.setQuitOnLastWindowClosed(False)
         self.window = MainWindow()
 
     def run(self) -> None:

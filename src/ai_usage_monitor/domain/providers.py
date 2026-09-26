@@ -168,3 +168,30 @@ def get_visible_provider_ids(settings: Mapping[str, object]) -> tuple[str, ...]:
         for definition in PROVIDER_DEFINITIONS
         if definition.provider_id in requested
     )
+
+
+TRAY_PROVIDERS_SETTING = "tray_providers"
+MAX_TRAY_PROVIDERS = 3
+
+
+def get_tray_provider_ids(settings: Mapping[str, object]) -> tuple[str, ...]:
+    """Read the providers pinned to the Windows taskbar tray, at most three.
+
+    Without a saved choice, the first three measurable visible cards are used so
+    the tray is useful on first launch. An explicitly saved empty list keeps the
+    tray empty.
+    """
+
+    raw = settings.get(TRAY_PROVIDERS_SETTING)
+    if not isinstance(raw, (list, tuple)):
+        return tuple(
+            provider_id
+            for provider_id in get_visible_provider_ids(settings)
+            if PROVIDER_DEFINITION_BY_ID[provider_id].summary_type != "manual"
+        )[:MAX_TRAY_PROVIDERS]
+
+    selected: list[str] = []
+    for item in raw:
+        if item in PROVIDER_DEFINITION_BY_ID and item not in selected:
+            selected.append(item)
+    return tuple(selected[:MAX_TRAY_PROVIDERS])

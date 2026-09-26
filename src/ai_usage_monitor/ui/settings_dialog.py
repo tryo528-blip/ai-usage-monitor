@@ -5,6 +5,7 @@ import os
 from PySide6.QtCore import QPoint, QProcess, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFrame,
     QGridLayout,
@@ -17,10 +18,13 @@ from PySide6.QtWidgets import (
 )
 
 from ai_usage_monitor.domain.providers import (
+    MAX_TRAY_PROVIDERS,
     PROVIDER_CARD_SCHEMA_SETTING,
     PROVIDER_CARD_SCHEMA_VERSION,
     PROVIDER_DEFINITIONS,
+    TRAY_PROVIDERS_SETTING,
     VISIBLE_PROVIDERS_SETTING,
+    get_tray_provider_ids,
     get_visible_provider_ids,
 )
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
@@ -72,6 +76,25 @@ QFrame#settings_section QCheckBox::indicator {
     width: 15px;
     height: 15px;
 }
+QFrame#settings_section QComboBox {
+    color: #141c2b;
+    background-color: #ffffff;
+    border: 1px solid #b9c3d2;
+    border-radius: 8px;
+    padding: 0 8px;
+    min-height: 28px;
+    font-size: 10px;
+}
+QFrame#settings_section QComboBox::drop-down {
+    border: none;
+    width: 18px;
+}
+QFrame#settings_section QComboBox QAbstractItemView {
+    color: #141c2b;
+    background-color: #ffffff;
+    selection-background-color: #26344f;
+    selection-color: #ffffff;
+}
 QPushButton {
     min-height: 30px;
     padding: 0 12px;
@@ -118,7 +141,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("설정")
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setFixedSize(460, 648)
+        self.setFixedSize(460, 744)
         self.setFont(pretendard_regular())
         self._drag_position: QPoint | None = None
         self.secret_store = secret_store or SecretStore()
@@ -139,6 +162,7 @@ class SettingsDialog(QDialog):
         layout.setSpacing(14)
         layout.addWidget(self._build_header())
         layout.addWidget(self._build_models_section(visible_provider_ids))
+        layout.addWidget(self._build_tray_section(get_tray_provider_ids(settings)))
         layout.addWidget(self._build_key_section())
         layout.addWidget(
             self._build_runtime_section(
@@ -189,7 +213,7 @@ class SettingsDialog(QDialog):
         stack.setSpacing(1)
         title = QLabel("설정")
         title.setObjectName("settings_title")
-        subtitle = QLabel("표시 모델 · 인증 · 자동 새로고침")
+        subtitle = QLabel("표시 모델 · 작업 표시줄 · 인증 · 자동 새로고침")
         subtitle.setObjectName("settings_subtitle")
         stack.addWidget(title)
         stack.addWidget(subtitle)
@@ -249,6 +273,41 @@ class SettingsDialog(QDialog):
             grid.addWidget(checkbox, index // 2, index % 2)
         section_layout.addLayout(grid)
         return section
+
+    def _build_tray_section(self, tray_ids: tuple[str, ...]) -> QFrame:
+        section, section_layout = self._section()
+        section.setFixedHeight(96)
+        self._section_heading(
+            section_layout,
+            "작업 표시줄",
+            f"시계 옆 알림 영역에 최대 {MAX_TRAY_PROVIDERS}개를 링 게이지로 표시합니다.",
+        )
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 4, 0, 0)
+        row.setSpacing(8)
+        self.tray_combos: list[QComboBox] = []
+        for slot in range(MAX_TRAY_PROVIDERS):
+            combo = QComboBox()
+            combo.addItem("없음", None)
+            for definition in PROVIDER_DEFINITIONS:
+                if definition.summary_type == "manual":
+                    continue
+                combo.addItem(definition.full_name or definition.title, definition.provider_id)
+            if slot < len(tray_ids):
+                combo.setCurrentIndex(max(0, combo.findData(tray_ids[slot])))
+            combo.setToolTip(f"작업 표시줄 {slot + 1}번째 게이지")
+            self.tray_combos.append(combo)
+            row.addWidget(combo, 1)
+        section_layout.addLayout(row)
+        return section
+
+    def selected_tray_provider_ids(self) -> list[str]:
+        selected: list[str] = []
+        for combo in self.tray_combos:
+            provider_id = combo.currentData()
+            if provider_id and provider_id not in selected:
+                selected.append(provider_id)
+        return selected
 
     def _build_key_section(self) -> QFrame:
         section, section_layout = self._section()
@@ -360,5 +419,6 @@ class SettingsDialog(QDialog):
             for definition in PROVIDER_DEFINITIONS
             if self.provider_checkboxes[definition.provider_id].isChecked()
         ]
+        settings[TRAY_PROVIDERS_SETTING] = self.selected_tray_provider_ids()
         self.settings_store.save(settings)
         self.accept()
