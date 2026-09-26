@@ -43,7 +43,8 @@ pwsh -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
 This rebuilds both executables, installs them to `%LOCALAPPDATA%\Programs\AIUsageMonitor`,
-removes old copies from the desktop, and adds a Startup shortcut that launches with `--hidden`
+removes old copies from the desktop, adds a Start menu entry ("AI Usage Monitor"), and adds a
+Startup shortcut that launches with `--hidden`
 (only the taskbar readout appears at login). Running it again updates in place. Remove with
 `install.bat -Uninstall`; settings and history in `%APPDATA%\AIUsageMonitor` are kept.
 Launching the app while it is already running brings the existing window forward.
