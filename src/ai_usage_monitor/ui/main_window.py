@@ -25,6 +25,7 @@ from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.providers import (
     PROVIDER_DEFINITION_BY_ID,
     PROVIDER_DEFINITIONS,
+    TASKBAR_MODE_SETTING,
     TASKBAR_OFFSET_SETTING,
     get_taskbar_provider_ids,
     get_visible_provider_ids,
@@ -39,7 +40,7 @@ from . import theme
 from .fonts import pretendard_regular
 from .provider_card import CARD_HEIGHT, CARD_WIDTH, ProviderCard
 from .settings_dialog import SettingsDialog
-from .taskbar_bar import DEFAULT_OFFSET_X, TaskbarBar
+from .taskbar_bar import DEFAULT_OFFSET_X, MODE_EMBED, TaskbarBar
 
 # Cards of one provider (5H and WEEK) sit closer together than cards of
 # different providers, so the row reads as groups rather than a flat list.
@@ -294,21 +295,29 @@ class MainWindow(QMainWindow):
         self._sync_visible_cards()
 
     def _build_taskbar_bar(self) -> None:
-        offset = self.settings_store.load().get(TASKBAR_OFFSET_SETTING, DEFAULT_OFFSET_X)
+        settings = self.settings_store.load()
+        offset = settings.get(TASKBAR_OFFSET_SETTING, DEFAULT_OFFSET_X)
         self.taskbar_bar = TaskbarBar(
             on_toggle_window=self.toggle_visible,
             on_refresh=self.refresh_all,
             on_settings=self._open_settings,
             on_quit=self.quit_app,
             offset_x=offset if isinstance(offset, int) else DEFAULT_OFFSET_X,
+            mode=str(settings.get(TASKBAR_MODE_SETTING, MODE_EMBED)),
             parent=self,
         )
         self.taskbar_bar.moved.connect(self._save_taskbar_offset)
+        self.taskbar_bar.mode_changed.connect(self._save_taskbar_mode)
         self.taskbar_bar.set_providers(self.taskbar_provider_ids, self.cards)
 
     def _save_taskbar_offset(self, offset: int) -> None:
         settings = self.settings_store.load()
         settings[TASKBAR_OFFSET_SETTING] = offset
+        self.settings_store.save(settings)
+
+    def _save_taskbar_mode(self, mode: str) -> None:
+        settings = self.settings_store.load()
+        settings[TASKBAR_MODE_SETTING] = mode
         self.settings_store.save(settings)
 
     def _build_collectors(self, *, collector_manager: CollectorManager | None = None) -> None:

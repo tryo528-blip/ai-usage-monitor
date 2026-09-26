@@ -43,7 +43,8 @@ pwsh -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
 This rebuilds both executables, installs them to `%LOCALAPPDATA%\Programs\AIUsageMonitor`,
-removes old copies from the desktop, and adds a Startup shortcut that launches with `--hidden`
+removes old copies from the desktop, adds a Start menu entry ("AI Usage Monitor"), and adds a
+Startup shortcut that launches with `--hidden`
 (only the taskbar readout appears at login). Running it again updates in place. Remove with
 `install.bat -Uninstall`; settings and history in `%APPDATA%\AIUsageMonitor` are kept.
 Launching the app while it is already running brings the existing window forward.
@@ -82,6 +83,8 @@ ruff format --check .
   skipped because credits are optional and should not delay or mark the quota cards critical.
 - Fable weekly (`FW`) is any usage-API bucket whose key mentions `fable`, or the `이번 주 Fable` /
   `Current week (Fable …)` line in CLI output.
-- Windows 11 has no API for adding text to the taskbar, so the readout is an always-on-top
-  window positioned over it that re-asserts itself twice a second.
+- Windows 11 has no API for adding text to the taskbar. By default the readout is attached to the
+  taskbar as a child window (like TrafficMonitor), so it stays visible while other apps are
+  active. If that misbehaves, right-click the readout → `표시 방식 바꾸기` to switch to an
+  always-on-top window placed over the taskbar (the choice is remembered).
 - Automatic refresh runs every 10 minutes. Claude percentages come from the CLI `/usage` output.

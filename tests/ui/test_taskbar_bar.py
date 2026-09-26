@@ -252,3 +252,27 @@ def test_taskbar_value_is_always_two_digits(qtbot, tmp_path) -> None:
     assert window.cards["claude_fable"].value_label.text() == "100%"
     window.cards["grok"].set_loading()
     assert window.cards["grok"].compact_value() == "--"
+
+
+def test_display_mode_toggle_is_saved_and_falls_back_off_windows(qtbot, tmp_path) -> None:
+    QApplication.instance() or QApplication([])
+    window = _window(tmp_path, {"visible_providers": ["grok"]})
+    qtbot.addWidget(window)
+    bar = window.taskbar_bar
+
+    assert bar.mode == "embed"
+    # Embedding needs the Windows taskbar; elsewhere the bar stays a window.
+    assert not bar.embedded
+    assert bar.isVisible()
+    assert "띄우기" in bar.mode_action.text()
+
+    bar.mode_action.trigger()
+
+    assert bar.mode == "overlay"
+    assert window.settings_store.load()["taskbar_mode"] == "overlay"
+    assert "붙이기" in bar.mode_action.text()
+    assert bar.isVisible()
+
+    window2 = _window(tmp_path / "second", {"taskbar_mode": "overlay"})
+    qtbot.addWidget(window2)
+    assert window2.taskbar_bar.mode == "overlay"

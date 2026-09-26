@@ -17,6 +17,7 @@ $InstallDir = Join-Path $env:LOCALAPPDATA "Programs\$AppName"
 $StartupDir = [Environment]::GetFolderPath("Startup")
 $DesktopDir = [Environment]::GetFolderPath("Desktop")
 $StartupLink = Join-Path $StartupDir "AI Usage Monitor.lnk"
+$StartMenuLink = Join-Path ([Environment]::GetFolderPath("Programs")) "AI Usage Monitor.lnk"
 
 function Stop-RunningApp {
     Get-Process -Name $AppName, "$AppName-cli" -ErrorAction SilentlyContinue |
@@ -37,6 +38,7 @@ function Remove-DesktopCopies {
 if ($Uninstall) {
     Stop-RunningApp
     if (Test-Path $StartupLink) { Remove-Item $StartupLink -Force }
+    if (Test-Path $StartMenuLink) { Remove-Item $StartMenuLink -Force }
     if (Test-Path $InstallDir) { Remove-Item $InstallDir -Recurse -Force }
     Remove-DesktopCopies
     Write-Host "Uninstalled. Settings and history in %APPDATA%\$AppName were kept."
@@ -87,14 +89,17 @@ Copy-Item "dist\$AppName.exe" $InstallDir -Force
 Copy-Item "dist\$AppName-cli.exe" $InstallDir -Force
 $AppExe = Join-Path $InstallDir "$AppName.exe"
 
-# 4. Start at login with only the taskbar readout showing.
+# 4. Start at login with only the taskbar readout showing, and add a Start menu
+#    entry to open the window (a second launch shows the running instance).
 $Shell = New-Object -ComObject WScript.Shell
-$Link = $Shell.CreateShortcut($StartupLink)
-$Link.TargetPath = $AppExe
-$Link.Arguments = "--hidden"
-$Link.WorkingDirectory = $InstallDir
-$Link.Description = "AI Usage Monitor"
-$Link.Save()
+foreach ($entry in @(@($StartupLink, "--hidden"), @($StartMenuLink, ""))) {
+    $Link = $Shell.CreateShortcut($entry[0])
+    $Link.TargetPath = $AppExe
+    $Link.Arguments = $entry[1]
+    $Link.WorkingDirectory = $InstallDir
+    $Link.Description = "AI Usage Monitor"
+    $Link.Save()
+}
 
 Remove-DesktopCopies
 
@@ -102,6 +107,7 @@ Write-Host ""
 Write-Host "Installed : $AppExe"
 Write-Host "Diagnose  : $(Join-Path $InstallDir "$AppName-cli.exe") --claude-raw"
 Write-Host "At login  : $StartupLink"
+Write-Host "Start menu: $StartMenuLink"
 
 # 5. Launch now.
 Start-Process -FilePath $AppExe -WorkingDirectory $InstallDir
