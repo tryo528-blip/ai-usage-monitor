@@ -4,18 +4,24 @@ A local Windows desktop dashboard for monitoring AI provider usage limits, balan
 
 ## Features
 
-- Codex live local app-server rate limits, Grok weekly usage bridge, Claude 5-hour usage bridge,
-  AntyG (Google Antigravity/Gemini) quota bridge, plus DeepSeek official HTTP API
-- Settings can select which provider/model cards are shown. AntyG reads Gemini quota and any
-  credits embedded in the same response from the signed-in Google Antigravity CLI (`agy`);
-  Z.AI and KIMI3 remain selectable until their collectors are added.
+- Cards use two-character codes: provider letter + window (`5` = five hours, `W` = weekly)
+
+  | Code | Source |
+  |---|---|
+  | `C5` / `CW` / `FW` | Claude 5h / Claude weekly / Fable weekly (Claude CLI `/usage`) |
+  | `G5` / `GW` | Codex 5h / weekly (local `codex app-server`) |
+  | `GR` | Grok weekly (CLI auth + billing endpoints) |
+  | `A5` / `AW` | Antigravity (Gemini) 5h / weekly (`agy` CLI) |
+  | `OR` | OpenRouter balance (Management Key) |
+
+- Main window: ring-gauge cards. Hue identifies the provider, the clockwise arc shows the
+  remaining quota, and the number turns amber/red at 20%/5% remaining.
+- Windows taskbar: up to three providers are pinned to the notification area next to the clock
+  as small tiles showing the code above a two-digit remaining number (100 reads `99`, 7 reads
+  `07`). The default is `C5` · `CW` · `FW`; change it in Settings → `작업 표시줄`. With tray
+  icons active, the close button hides the window to the tray; use the tray menu's `종료` to quit.
 - Keyring-backed secret storage on Windows
 - SQLite history retention
-- PySide6 desktop window with ring-gauge cards: hue identifies the provider, the clockwise
-  arc shows the remaining quota, and the number turns amber/red at 20%/5% remaining
-- Up to three providers can be pinned to the Windows taskbar notification area (next to the
-  clock) as live ring-gauge icons. Pick them in Settings → `작업 표시줄`. With tray icons
-  active, the close button hides the window to the tray; use the tray menu's `종료` to quit.
 
 ## Development setup
 
@@ -53,6 +59,8 @@ ruff format --check .
 - AntyG usage reads the local `agy -p /usage --output-format json` command. Sign in to
   Antigravity once before refreshing the card. A separate `/credits` request is intentionally
   skipped because credits are optional and should not delay or mark the quota cards critical.
+- Fable weekly is read from a `Current week (... Fable ...)` line in Claude `/usage`; the `FW`
+  card shows `N/A` when the CLI does not print that line.
 - Windows 11 hides new tray icons in the overflow (^) menu by default. Drag them onto the
   taskbar, or enable them under Settings → Personalization → Taskbar → Other system tray icons.
 - Automatic refresh runs every 10 minutes. Claude percentages come from the CLI `/usage` output.

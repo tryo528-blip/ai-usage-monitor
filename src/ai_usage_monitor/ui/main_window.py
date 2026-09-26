@@ -20,9 +20,7 @@ from ai_usage_monitor.collectors.antyg_bridge import AntigravityCollector
 from ai_usage_monitor.collectors.base import Collector
 from ai_usage_monitor.collectors.claude_bridge import ClaudeBridgeCollector
 from ai_usage_monitor.collectors.codex_app_server import CodexAppServerCollector
-from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
 from ai_usage_monitor.collectors.grok import GrokCollector
-from ai_usage_monitor.collectors.manual import ManualCollector
 from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.providers import (
     PROVIDER_DEFINITION_BY_ID,
@@ -323,21 +321,7 @@ class MainWindow(QMainWindow):
             collectors.append(CodexAppServerCollector())
         if "grok" in selected:
             collectors.append(GrokCollector())
-        if "deepseek" in selected:
-            collectors.append(DeepSeekCollector(secret_store=self.secret_store))
-
-        for provider_id in ("zai", "kimi3"):
-            if provider_id in selected:
-                definition = PROVIDER_DEFINITION_BY_ID[provider_id]
-                collectors.append(
-                    ManualCollector(
-                        provider_id,
-                        definition.full_name or definition.title,
-                        secret_store=self.secret_store,
-                        secret_key=f"{provider_id}.api_key",
-                    )
-                )
-        if selected & {"claude", "claude_5h"}:
+        if selected & {"claude", "claude_5h", "claude_fable"}:
             collectors.append(ClaudeBridgeCollector())
         if selected & {"antyg", "antyg_5h"}:
             collectors.append(AntigravityCollector())

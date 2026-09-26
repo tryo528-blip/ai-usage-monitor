@@ -23,6 +23,16 @@ USAGE_LINE_PATTERNS = {
         r"Current week \(all models\):\s*(?P<percent>\d+(?:\.\d+)?)%",
         re.IGNORECASE,
     ),
+    # Model-specific weekly bucket, e.g. "Current week (Fable only): 12% used".
+    "weekly_fable": re.compile(
+        r"Current week \([^)]*fable[^)]*\):\s*(?P<percent>\d+(?:\.\d+)?)%",
+        re.IGNORECASE,
+    ),
+}
+USAGE_LABELS = {
+    "five_hour": "5시간 사용량",
+    "weekly": "주간 사용량",
+    "weekly_fable": "Fable 주간 사용량",
 }
 RESET_PATTERN = re.compile(r"resets\s+(?P<reset>.+?)\s+\((?P<zone>[^)]+)\)", re.IGNORECASE)
 
@@ -233,7 +243,7 @@ class ClaudeBridgeCollector(Collector):
                 reset_at = cls._parse_reset(
                     reset_match.group("reset"), reset_match.group("zone"), now=now
                 )
-            label = "5시간 사용량" if key == "five_hour" else "주간 사용량"
+            label = USAGE_LABELS[key]
             window_minutes = 5 * 60 if key == "five_hour" else 7 * 24 * 60
             quotas.append(
                 QuotaWindow(

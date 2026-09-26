@@ -44,6 +44,25 @@ def test_claude_usage_parses_terminal_decorated_lines() -> None:
     ]
 
 
+def test_claude_usage_parses_fable_weekly_bucket() -> None:
+    output = USAGE_OUTPUT + (
+        "Current week (Fable only): 41% used · resets Aug 9, 10pm (Asia/Seoul)\n"
+    )
+
+    quotas = ClaudeBridgeCollector._parse_usage(
+        output,
+        now=datetime(2026, 8, 5, 12, 0, tzinfo=timezone.utc),
+    )
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 33.0),
+        ("weekly", 29.0),
+        ("weekly_fable", 41.0),
+    ]
+    assert quotas[2].label == "Fable 주간 사용량"
+    assert quotas[2].resets_at is not None
+
+
 def _stub_candidates(monkeypatch, *paths: str) -> None:
     monkeypatch.setattr(
         ClaudeBridgeCollector,

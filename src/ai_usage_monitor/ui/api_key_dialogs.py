@@ -16,7 +16,6 @@ from PySide6.QtWidgets import (
 )
 
 from ai_usage_monitor.collectors.base import Collector
-from ai_usage_monitor.collectors.deepseek import DeepSeekCollector
 from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.infrastructure.secret_store import FakeSecretStore, SecretStore
 
@@ -46,30 +45,11 @@ API_KEY_CREDENTIALS: tuple[ApiKeyCredential, ...] = (
         note="키 저장 가능 · 현재 사용량 수집은 CLI 로그인을 사용합니다.",
     ),
     ApiKeyCredential(
-        provider_id="deepseek",
-        label="DeepSeek",
-        secret_key="deepseek.api_key",
-        connection_test_supported=True,
-        note="Windows 자격 증명에 안전하게 저장됩니다.",
-    ),
-    ApiKeyCredential(
         provider_id="openrouter",
         label="OpenRouter",
         secret_key="openrouter.management_key",
         connection_test_supported=True,
         note="잔액 조회용 Management Key를 안전하게 저장합니다.",
-    ),
-    ApiKeyCredential(
-        provider_id="zai",
-        label="Z.AI",
-        secret_key="zai.api_key",
-        note="키 저장 가능 · 사용량 수집기 연결 준비 중입니다.",
-    ),
-    ApiKeyCredential(
-        provider_id="kimi3",
-        label="KIMI3",
-        secret_key="kimi3.api_key",
-        note="키 저장 가능 · 사용량 수집기 연결 준비 중입니다.",
     ),
     ApiKeyCredential(
         provider_id="claude",
@@ -338,10 +318,8 @@ class ApiKeyInputDialog(_ApiKeyDialogBase):
             return
         temp_store = FakeSecretStore()
         temp_store.set(credential.secret_key, value)
-        if credential.provider_id == "deepseek":
-            collector: Collector = DeepSeekCollector(secret_store=temp_store)
-        elif credential.provider_id == "openrouter":
-            collector = OpenRouterCollector(secret_store=temp_store)
+        if credential.provider_id == "openrouter":
+            collector: Collector = OpenRouterCollector(secret_store=temp_store)
         else:
             return
         self._worker = _ConnectionTestWorker(credential.label, collector)

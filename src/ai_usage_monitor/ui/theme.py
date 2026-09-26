@@ -29,9 +29,6 @@ TEXT_FAINT = "#56627f"
 PROVIDER_ACCENTS: dict[str, str] = {
     "codex": "#3ddc97",
     "grok": "#c9d4e5",
-    "deepseek": "#5b7cff",
-    "zai": "#8b93a7",
-    "kimi3": "#8b93a7",
     "claude": "#e07a5f",
     "antyg": "#a78bfa",
     "openrouter": "#56c8f5",

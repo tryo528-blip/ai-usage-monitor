@@ -59,12 +59,13 @@ def _window(tmp_path, settings: dict) -> MainWindow:
     )
 
 
-def test_tray_selection_defaults_to_first_three_measurable_visible_cards() -> None:
-    settings = {
-        PROVIDER_CARD_SCHEMA_SETTING: PROVIDER_CARD_SCHEMA_VERSION,
-        "visible_providers": ["zai", "grok", "deepseek", "antyg", "openrouter"],
-    }
-    assert get_tray_provider_ids(settings) == ("grok", "deepseek", "antyg")
+def test_tray_selection_defaults_to_claude_session_weekly_and_fable() -> None:
+    assert get_tray_provider_ids({}) == ("claude_5h", "claude", "claude_fable")
+    assert get_tray_provider_ids({"visible_providers": ["grok"]}) == (
+        "claude_5h",
+        "claude",
+        "claude_fable",
+    )
 
 
 def test_tray_selection_keeps_saved_order_drops_unknown_and_caps_at_three() -> None:
@@ -105,11 +106,11 @@ def test_tray_icons_follow_selected_cards_even_when_hidden(qtbot, tmp_path) -> N
 
     window._handle_result(CollectionResult("antyg", _antigravity_snapshot()))
 
-    assert window.cards["antyg_5h"].compact_value() == "3"
+    assert window.cards["antyg_5h"].compact_value() == "03"
     tooltip = window.tray.icons["antyg_5h"].toolTip()
-    assert tooltip.startswith("Antigravity 5h  3%")
+    assert tooltip.startswith("A503 · Antigravity 5h 3%")
     assert "초기화" in tooltip
-    assert window.tray.icons["antyg"].toolTip().startswith("Antigravity Weekly  78%")
+    assert window.tray.icons["antyg"].toolTip().startswith("AW78 · Antigravity Weekly 78%")
     assert not window.tray.icons["antyg"].icon().isNull()
 
 
@@ -117,11 +118,15 @@ def test_saving_settings_updates_tray_selection(qtbot, tmp_path) -> None:
     QApplication.instance() or QApplication([])
     window = _window(tmp_path, {"visible_providers": ["grok"]})
     qtbot.addWidget(window)
-    assert list(window.tray.icons) == ["grok"]
+    assert list(window.tray.icons) == ["claude_5h", "claude", "claude_fable"]
 
     dialog = SettingsDialog(secret_store=FakeSecretStore(), settings_store=window.settings_store)
     qtbot.addWidget(dialog)
-    assert [combo.currentData() for combo in dialog.tray_combos] == ["grok", None, None]
+    assert [combo.currentData() for combo in dialog.tray_combos] == [
+        "claude_5h",
+        "claude",
+        "claude_fable",
+    ]
     dialog.tray_combos[0].setCurrentIndex(dialog.tray_combos[0].findData("codex_5h"))
     dialog.tray_combos[1].setCurrentIndex(dialog.tray_combos[1].findData("codex_5h"))
     dialog.tray_combos[2].setCurrentIndex(dialog.tray_combos[2].findData("openrouter"))
@@ -136,7 +141,7 @@ def test_saving_settings_updates_tray_selection(qtbot, tmp_path) -> None:
 def test_close_hides_to_tray_and_quit_really_closes(qtbot, tmp_path, monkeypatch) -> None:
     QApplication.instance() or QApplication([])
     monkeypatch.setattr(TrayController, "is_available", staticmethod(lambda: True))
-    window = _window(tmp_path, {"visible_providers": ["grok"]})
+    window = _window(tmp_path, {"visible_providers": ["grok"], TRAY_PROVIDERS_SETTING: ["grok"]})
     qtbot.addWidget(window)
     window.show()
     qtbot.waitExposed(window)
@@ -152,15 +157,48 @@ def test_close_hides_to_tray_and_quit_really_closes(qtbot, tmp_path, monkeypatch
     assert not window.isVisible()
 
 
-def test_tray_pixmap_draws_number_on_dark_disc(qtbot) -> None:
+def test_tray_value_is_always_two_digits(qtbot, tmp_path) -> None:
     QApplication.instance() or QApplication([])
-    pixmap = render_tray_pixmap(32, "42", 0.42, "#3ddc97", AlertLevel.OK)
+    window = _window(tmp_path, {"visible_providers": ["claude_5h", "claude", "claude_fable"]})
+    qtbot.addWidget(window)
+    now = datetime.now(timezone.utc)
+    snapshot = UsageSnapshot(
+        provider_id="claude",
+        provider_name="Claude",
+        source_type=SourceType.LOCAL_BRIDGE,
+        status=ProviderStatus.OK,
+        collected_at=now,
+        quota_windows=[
+            QuotaWindow(key="five_hour", label="5h", used_percent=10),
+            QuotaWindow(key="weekly", label="weekly", used_percent=93),
+            QuotaWindow(key="weekly_fable", label="fable", used_percent=0),
+        ],
+    )
+
+    window._handle_result(CollectionResult("claude", snapshot))
+
+    assert [window.cards[key].compact_value() for key in window.tray_provider_ids] == [
+        "90",
+        "07",
+        "99",
+    ]
+    assert window.cards["claude_fable"].value_label.text() == "100%"
+    window.cards["grok"].set_loading()
+    assert window.cards["grok"].compact_value() == "--"
+
+
+def test_tray_pixmap_draws_code_and_number_on_dark_tile(qtbot) -> None:
+    QApplication.instance() or QApplication([])
+    pixmap = render_tray_pixmap(32, "C5", "90", "#e07a5f", AlertLevel.OK)
     image = pixmap.toImage()
 
     assert pixmap.width() == pixmap.height() == 32
     assert image.pixelColor(0, 0).alpha() == 0
-    # The arc starts at 12 o'clock and runs clockwise, so the top-right edge
-    # is accent colored while the top-left edge still shows the dark track.
-    top_right = image.pixelColor(22, 2)
-    assert top_right.green() > top_right.red()
-    assert QColor(image.pixelColor(9, 2)).lightness() < 80
+    background = QColor(theme.BACKGROUND)
+    top = [image.pixelColor(x, y) for x in range(32) for y in range(3, 15)]
+    bottom = [image.pixelColor(x, y) for x in range(32) for y in range(17, 30)]
+    # The code row carries the provider accent; the number row is near white.
+    assert any(c.red() > 180 and c.blue() < 140 for c in top)
+    assert any(min(c.red(), c.green(), c.blue()) > 200 for c in bottom)
+    assert image.pixelColor(16, 16).alpha() == 255
+    assert QColor(image.pixelColor(2, 16)).lightness() == background.lightness()

@@ -1,8 +1,9 @@
-"""Up to three live gauges in the Windows taskbar notification area.
+"""Up to three live readouts in the Windows taskbar notification area.
 
-Each pinned provider gets its own tray icon: a dark disc (readable on light and
-dark taskbars), a ring in the provider's color whose arc is the remaining
-quota, and the remaining number in the middle.
+Each pinned provider gets its own tray icon: a dark tile (readable on light and
+dark taskbars) with the two-character code on top in the provider's color and
+the remaining percentage below, always two digits. Read left to right, three
+icons spell out e.g. C5 90 · CW 95 · FW 99.
 """
 
 from __future__ import annotations
@@ -20,14 +21,22 @@ if TYPE_CHECKING:
     from .provider_card import ProviderCard
 
 # Windows asks for 16px at 100% scaling and up to 32px at 200%. Painting each
-# size separately keeps the digits sharp instead of letting Windows resample.
+# size separately keeps the characters sharp instead of letting Windows resample.
 _ICON_SIZES = (16, 20, 24, 32, 40, 48, 64)
+
+
+def _fit_font(size: int, fraction: float) -> QFont:
+    font = QFont()
+    font.setBold(True)
+    font.setPixelSize(max(6, round(size * fraction)))
+    font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -size * 0.02)
+    return font
 
 
 def render_tray_pixmap(
     size: int,
+    code: str,
     value: str,
-    fraction: float | None,
     accent: str,
     level: AlertLevel,
 ) -> QPixmap:
@@ -38,41 +47,30 @@ def render_tray_pixmap(
     painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
 
     rect = QRectF(0, 0, size, size)
+    radius = size * 0.18
     painter.setPen(Qt.PenStyle.NoPen)
     painter.setBrush(QColor(theme.BACKGROUND))
-    painter.drawEllipse(rect.adjusted(0.5, 0.5, -0.5, -0.5))
+    painter.drawRoundedRect(rect, radius, radius)
 
-    ring_width = max(1.6, size * 0.12)
-    ring_rect = rect.adjusted(0.5, 0.5, -0.5, -0.5)
-    theme.draw_ring(painter, ring_rect, fraction, accent, width=ring_width)
-
-    if len(value) > 2:
-        # "100" does not fit in 16px; a full ring with a center dot says it.
-        dot = size * 0.16
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme.LEVEL_TEXT_COLORS[level]))
-        painter.drawEllipse(rect.center(), dot, dot)
-    else:
-        font = QFont()
-        font.setBold(True)
-        font.setPixelSize(max(7, round(size * (0.62 if len(value) == 1 else 0.52))))
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, -size * 0.03)
-        painter.setFont(font)
-        painter.setPen(QColor(theme.LEVEL_TEXT_COLORS[level]))
-        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, value)
+    # Two equal rows: the code (who) above, the number (how much) below. The
+    # number row is a touch larger because it is the part that changes.
+    half = size / 2
+    top = QRectF(0, size * 0.02, size, half)
+    bottom = QRectF(0, half - size * 0.04, size, half)
+    painter.setFont(_fit_font(size, 0.47))
+    painter.setPen(QColor(accent))
+    painter.drawText(top, Qt.AlignmentFlag.AlignCenter, code)
+    painter.setFont(_fit_font(size, 0.54))
+    painter.setPen(QColor(theme.LEVEL_TEXT_COLORS[level]))
+    painter.drawText(bottom, Qt.AlignmentFlag.AlignCenter, value)
     painter.end()
     return pixmap
 
 
-def render_tray_icon(
-    value: str,
-    fraction: float | None,
-    accent: str,
-    level: AlertLevel,
-) -> QIcon:
+def render_tray_icon(code: str, value: str, accent: str, level: AlertLevel) -> QIcon:
     icon = QIcon()
     for size in _ICON_SIZES:
-        icon.addPixmap(render_tray_pixmap(size, value, fraction, accent, level))
+        icon.addPixmap(render_tray_pixmap(size, code, value, accent, level))
     return icon
 
 
@@ -139,7 +137,9 @@ class TrayController(QObject):
         icon = self.icons.get(provider_id)
         if icon is None:
             return
-        icon.setIcon(render_tray_icon(card.compact_value(), card.fraction, card.accent, card.level))
+        icon.setIcon(
+            render_tray_icon(card.short_name, card.compact_value(), card.accent, card.level)
+        )
         icon.setToolTip(card.summary_text())
 
     def hide_all(self) -> None:

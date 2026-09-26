@@ -120,9 +120,7 @@ class ProviderCard(QFrame):
         self.value_label.setToolTip("조회 중")
         gauge_layout.addWidget(self.value_label)
 
-        # The abbreviation's suffix ("-5", "-W") is already spelled out by the
-        # window label below, so the heading shows only the provider stem.
-        self.title_label = QLabel(title.split("-", 1)[0])
+        self.title_label = QLabel(title)
         self.title_label.setFixedHeight(15)
         self.title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title_label.setToolTip(self.full_name)
@@ -161,24 +159,32 @@ class ProviderCard(QFrame):
         return self.gauge.fraction if self.gauge.mode == RingMode.ARC else None
 
     def compact_value(self) -> str:
-        """The value reduced to what fits inside a 16px tray icon."""
+        """Exactly two digits for the tray: 100 reads 99, 7 reads 07.
+
+        A fixed width keeps the three tray codes aligned (C590, CW07, FW99).
+        Anything unmeasured reads "--".
+        """
 
         text = self.value_label.text()
+        number: Decimal | None = None
         if self.gauge.mode == RingMode.ARC and text.endswith("%") and "/" not in text:
-            return text[:-1]
-        if self.gauge.mode == RingMode.AMOUNT:
+            number = Decimal(text[:-1])
+        elif self.gauge.mode == RingMode.AMOUNT or text == "$0":
             try:
-                return str(int(Decimal(text)))
-            except (ArithmeticError, ValueError):
-                return "$"
-        return "–"
+                number = Decimal(text.lstrip("$"))
+            except ArithmeticError:
+                number = None
+        if number is None:
+            return "--"
+        return f"{max(0, min(99, int(number))):02d}"
 
     def summary_text(self) -> str:
         value = self.value_label.text().replace("\n", " ")
         details = [self.window_label.text()]
         if self.time_label.text():
             details.append(f"{self.time_label.text()} 초기화")
-        return f"{self.full_name}  {value}  ({' · '.join(details)})"
+        code = f"{self.short_name}{self.compact_value()}"
+        return f"{code} · {self.full_name} {value} ({' · '.join(details)})"
 
     # -- rendering ----------------------------------------------------------------------
 
