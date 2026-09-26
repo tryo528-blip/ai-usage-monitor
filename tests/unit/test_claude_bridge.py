@@ -277,24 +277,111 @@ def test_collect_falls_back_to_cli_without_api(monkeypatch, tmp_path) -> None:
     assert [quota.key for quota in snapshot.quota_windows] == ["five_hour", "weekly"]
 
 
-def test_access_token_is_skipped_when_expired(monkeypatch, tmp_path) -> None:
+def test_access_token_expiry_handling(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
     now = datetime(2026, 9, 26, 12, 0, tzinfo=timezone.utc)
     credentials = tmp_path / ".credentials.json"
 
-    credentials.write_text(
-        '{"claudeAiOauth": {"accessToken": "tok", "expiresAt": %d}}'
-        % int((now.timestamp() + 60) * 1000),
-        encoding="utf-8",
-    )
-    assert ClaudeBridgeCollector._read_access_token(now=now) == "tok"
+    def token_with(expires_at: int) -> str | None:
+        credentials.write_text(
+            '{"claudeAiOauth": {"accessToken": "tok", "expiresAt": %d}}' % expires_at,
+            encoding="utf-8",
+        )
+        return ClaudeBridgeCollector._read_access_token(now=now)
 
-    credentials.write_text(
-        '{"claudeAiOauth": {"accessToken": "tok", "expiresAt": %d}}'
-        % int((now.timestamp() - 60) * 1000),
-        encoding="utf-8",
+    now_ms = int(now.timestamp() * 1000)
+    assert token_with(now_ms + 600_000) == "tok"
+    assert token_with(0) == "tok"  # 0 means no known expiry
+    assert token_with(now_ms + 30_000) is None  # inside the safety margin
+    assert token_with(now_ms - 60_000) is None
+
+
+def test_usage_api_http_failure_falls_back_to_cli(monkeypatch, tmp_path) -> None:
+    import httpx
+
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
+    (tmp_path / ".credentials.json").write_text(
+        '{"claudeAiOauth": {"accessToken": "tok", "expiresAt": 0}}', encoding="utf-8"
     )
-    assert ClaudeBridgeCollector._read_access_token(now=now) is None
+
+    def unauthorized(*_args, **_kwargs):
+        request = httpx.Request("GET", claude_bridge.USAGE_API_URL)
+        return httpx.Response(401, request=request)
+
+    monkeypatch.setattr(claude_bridge.httpx, "get", unauthorized)
+    monkeypatch.setattr(ClaudeBridgeCollector, "_run_usage", staticmethod(lambda: USAGE_OUTPUT))
+
+    snapshot = ClaudeBridgeCollector().collect()
+
+    assert [(quota.key, quota.used_percent) for quota in snapshot.quota_windows] == [
+        ("five_hour", 33.0),
+        ("weekly", 29.0),
+    ]
+
+
+def test_cli_parser_never_borrows_the_next_lines_percentage() -> None:
+    quotas = ClaudeBridgeCollector._parse_usage(
+        "Current session: no usage yet\nCurrent week (all models): 29% used\n",
+        now=datetime(2026, 9, 26, 3, 0, tzinfo=timezone.utc),
+    )
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [("weekly", 29.0)]
+
+    korean = ClaudeBridgeCollector._parse_usage(
+        "현재 세션 사용량 없음\n이번 주\n29% 사용됨\n",
+        now=datetime(2026, 9, 26, 3, 0, tzinfo=timezone.utc),
+    )
+    assert [(quota.key, quota.used_percent) for quota in korean] == [("weekly", 29.0)]
+
+
+def test_cli_parser_accepts_bare_week_but_not_model_specific_week() -> None:
+    now = datetime(2026, 9, 26, 3, 0, tzinfo=timezone.utc)
+    assert [
+        (q.key, q.used_percent)
+        for q in ClaudeBridgeCollector._parse_usage("Current week: 45% used", now=now)
+    ] == [("weekly", 45.0)]
+    assert [
+        (q.key, q.used_percent)
+        for q in ClaudeBridgeCollector._parse_usage(
+            "Current week (Sonnet only): 3% used\nCurrent week (all models): 20% used", now=now
+        )
+    ] == [("weekly", 20.0)]
+
+
+def test_usage_api_matches_nested_buckets_and_prefers_weekly_fable() -> None:
+    data = {
+        "limits": {
+            "five_hour": {"utilization": 12},
+            "seven_day": {"utilization": 34},
+        },
+        "fable": {
+            "five_hour": {"utilization": 90},
+            "seven_day": {"utilization": 56},
+        },
+    }
+
+    quotas = ClaudeBridgeCollector._parse_usage_json(data)
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 12.0),
+        ("weekly", 34.0),
+        ("weekly_fable", 56.0),
+    ]
+
+
+def test_claude_raw_dump_masks_identifiers() -> None:
+    from ai_usage_monitor.cli import redact_identifiers
+
+    masked = redact_identifiers(
+        {
+            "five_hour": {"utilization": 3, "resets_at": "2026-09-26T05:00:00Z"},
+            "organization_uuid": "org-123",
+            "extra": [{"account_email": "me@example.com"}],
+        }
+    )
+
+    assert masked["five_hour"] == {"utilization": 3, "resets_at": "2026-09-26T05:00:00Z"}
+    assert masked["organization_uuid"] == "***"
+    assert masked["extra"] == [{"account_email": "***"}]
 
 
 def test_cli_parser_reads_korean_usage_text() -> None:

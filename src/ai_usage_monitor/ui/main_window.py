@@ -25,7 +25,8 @@ from ai_usage_monitor.collectors.openrouter import OpenRouterCollector
 from ai_usage_monitor.domain.providers import (
     PROVIDER_DEFINITION_BY_ID,
     PROVIDER_DEFINITIONS,
-    get_tray_provider_ids,
+    TASKBAR_OFFSET_SETTING,
+    get_taskbar_provider_ids,
     get_visible_provider_ids,
 )
 from ai_usage_monitor.infrastructure.database import UsageDatabase
@@ -38,7 +39,7 @@ from . import theme
 from .fonts import pretendard_regular
 from .provider_card import CARD_HEIGHT, CARD_WIDTH, ProviderCard
 from .settings_dialog import SettingsDialog
-from .tray import TrayController
+from .taskbar_bar import DEFAULT_OFFSET_X, TaskbarBar
 
 # Cards of one provider (5H and WEEK) sit closer together than cards of
 # different providers, so the row reads as groups rather than a flat list.
@@ -128,11 +129,11 @@ class MainWindow(QMainWindow):
         self.startup_refresh = startup_refresh
         settings = self.settings_store.load()
         self.selected_provider_ids = get_visible_provider_ids(settings)
-        self.tray_provider_ids = get_tray_provider_ids(settings)
+        self.taskbar_provider_ids = get_taskbar_provider_ids(settings)
         self._uses_default_collector_manager = collector_manager is None
 
         self._build_ui()
-        self._build_tray()
+        self._build_taskbar_bar()
         self._build_collectors(collector_manager=collector_manager)
         self._build_timer()
         self._apply_settings()
@@ -174,16 +175,16 @@ class MainWindow(QMainWindow):
         super().mouseReleaseEvent(event)
 
     def closeEvent(self, event) -> None:
-        # With gauges in the taskbar, the close button tucks the window away
-        # and the tray menu's "종료" really quits.
-        if not self._quitting and self.tray.active:
+        # With the taskbar readout showing, the close button tucks the window
+        # away and the readout's right-click "종료" really quits.
+        if not self._quitting and self.taskbar_bar.active:
             event.ignore()
             self.hide()
             return
-        self.tray.hide_all()
+        self.taskbar_bar.hide_all()
         super().closeEvent(event)
         app = QApplication.instance()
-        # App disables quit-on-last-window so hiding to the tray keeps it alive;
+        # App disables quit-on-last-window so hiding the window keeps it alive;
         # an accepted close must then end the event loop explicitly.
         if app is not None and not app.quitOnLastWindowClosed():
             app.quit()
@@ -191,6 +192,11 @@ class MainWindow(QMainWindow):
     def quit_app(self) -> None:
         self._quitting = True
         self.close()
+
+    def allow_close(self, *_args) -> None:
+        """Let the next close really close, e.g. when Windows logs off."""
+
+        self._quitting = True
 
     def toggle_visible(self) -> None:
         if self.isVisible() and not self.isMinimized():
@@ -287,15 +293,23 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         self._sync_visible_cards()
 
-    def _build_tray(self) -> None:
-        self.tray = TrayController(
+    def _build_taskbar_bar(self) -> None:
+        offset = self.settings_store.load().get(TASKBAR_OFFSET_SETTING, DEFAULT_OFFSET_X)
+        self.taskbar_bar = TaskbarBar(
             on_toggle_window=self.toggle_visible,
             on_refresh=self.refresh_all,
             on_settings=self._open_settings,
             on_quit=self.quit_app,
+            offset_x=offset if isinstance(offset, int) else DEFAULT_OFFSET_X,
             parent=self,
         )
-        self.tray.set_providers(self.tray_provider_ids, self.cards)
+        self.taskbar_bar.moved.connect(self._save_taskbar_offset)
+        self.taskbar_bar.set_providers(self.taskbar_provider_ids, self.cards)
+
+    def _save_taskbar_offset(self, offset: int) -> None:
+        settings = self.settings_store.load()
+        settings[TASKBAR_OFFSET_SETTING] = offset
+        self.settings_store.save(settings)
 
     def _build_collectors(self, *, collector_manager: CollectorManager | None = None) -> None:
         if collector_manager is None:
@@ -305,9 +319,9 @@ class MainWindow(QMainWindow):
 
     @property
     def tracked_provider_ids(self) -> tuple[str, ...]:
-        """Cards fed by collectors: the visible row plus the tray gauges."""
+        """Cards fed by collectors: the visible row plus the taskbar readout."""
 
-        tracked = set(self.selected_provider_ids) | set(self.tray_provider_ids)
+        tracked = set(self.selected_provider_ids) | set(self.taskbar_provider_ids)
         return tuple(
             definition.provider_id
             for definition in PROVIDER_DEFINITIONS
@@ -362,16 +376,16 @@ class MainWindow(QMainWindow):
     def _apply_settings(self) -> bool:
         settings = self.settings_store.load()
         selected_provider_ids = get_visible_provider_ids(settings)
-        tray_provider_ids = get_tray_provider_ids(settings)
+        taskbar_provider_ids = get_taskbar_provider_ids(settings)
         selection_changed = selected_provider_ids != self.selected_provider_ids
-        tray_changed = tray_provider_ids != self.tray_provider_ids
+        taskbar_changed = taskbar_provider_ids != self.taskbar_provider_ids
         self.selected_provider_ids = selected_provider_ids
-        self.tray_provider_ids = tray_provider_ids
+        self.taskbar_provider_ids = taskbar_provider_ids
         if selection_changed:
             self._sync_visible_cards()
-        if tray_changed:
-            self.tray.set_providers(self.tray_provider_ids, self.cards)
-        if (selection_changed or tray_changed) and self._uses_default_collector_manager:
+        if taskbar_changed:
+            self.taskbar_bar.set_providers(self.taskbar_provider_ids, self.cards)
+        if (selection_changed or taskbar_changed) and self._uses_default_collector_manager:
             self.collector_manager.collectors = self._build_default_collectors()
 
         enable_auto = bool(settings.get("auto_refresh", True))
@@ -379,12 +393,12 @@ class MainWindow(QMainWindow):
             self.refresh_timer.start()
         else:
             self.refresh_timer.stop()
-        return selection_changed or tray_changed
+        return selection_changed or taskbar_changed
 
     def refresh_all(self) -> None:
         for provider_id in self.tracked_provider_ids:
             self.cards[provider_id].set_loading()
-            self.tray.update(provider_id, self.cards[provider_id])
+            self.taskbar_bar.update_card(provider_id, self.cards[provider_id])
         self.collector_manager.refresh()
 
     def _open_settings(self) -> None:
@@ -416,11 +430,11 @@ class MainWindow(QMainWindow):
 
         for provider_id in provider_ids:
             self.cards[provider_id].set_snapshot(snapshot)
-            self.tray.update(provider_id, self.cards[provider_id])
+            self.taskbar_bar.update_card(provider_id, self.cards[provider_id])
         self.updated_label.setText(f"{datetime.now():%H:%M} 갱신")
         try:
             self.database.save_snapshot(snapshot)
         except Exception:
             for provider_id in provider_ids:
                 self.cards[provider_id].set_error("SQLite 저장 실패")
-                self.tray.update(provider_id, self.cards[provider_id])
+                self.taskbar_bar.update_card(provider_id, self.cards[provider_id])

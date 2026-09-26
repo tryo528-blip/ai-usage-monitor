@@ -1,4 +1,4 @@
-"""Shared palette and painters for the main window, cards, and tray icons.
+"""Shared palette and painters for the main window, cards, and taskbar readout.
 
 The visual language has two independent channels:
 

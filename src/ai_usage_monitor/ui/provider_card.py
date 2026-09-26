@@ -152,16 +152,16 @@ class ProviderCard(QFrame):
         self._set_font_10()
         self._apply_level(AlertLevel.MUTED)
 
-    # -- public state used by the tray -------------------------------------------------
+    # -- public state used by the taskbar readout -------------------------------------------------
 
     @property
     def fraction(self) -> float | None:
         return self.gauge.fraction if self.gauge.mode == RingMode.ARC else None
 
     def compact_value(self) -> str:
-        """Exactly two digits for the tray: 100 reads 99, 7 reads 07.
+        """Exactly two digits for the taskbar: 100 reads 99, 7 reads 07.
 
-        A fixed width keeps the three tray codes aligned (C590, CW07, FW99).
+        A fixed width keeps the three taskbar codes aligned (C5 90, CW 07, FW 99).
         Anything unmeasured reads "--".
         """
 

@@ -155,26 +155,28 @@ def get_visible_provider_ids(settings: Mapping[str, object]) -> tuple[str, ...]:
     )
 
 
-TRAY_PROVIDERS_SETTING = "tray_providers"
-MAX_TRAY_PROVIDERS = 3
+TASKBAR_PROVIDERS_SETTING = "taskbar_providers"
+# Horizontal position of the taskbar readout, in pixels from the taskbar's left edge.
+TASKBAR_OFFSET_SETTING = "taskbar_offset_x"
+MAX_TASKBAR_PROVIDERS = 3
 
 
-DEFAULT_TRAY_PROVIDER_IDS: tuple[str, ...] = ("claude_5h", "claude", "claude_fable")
+DEFAULT_TASKBAR_PROVIDER_IDS: tuple[str, ...] = ("claude_5h", "claude", "claude_fable")
 
 
-def get_tray_provider_ids(settings: Mapping[str, object]) -> tuple[str, ...]:
-    """Read the providers pinned to the Windows taskbar tray, at most three.
+def get_taskbar_provider_ids(settings: Mapping[str, object]) -> tuple[str, ...]:
+    """Read the providers shown on the Windows taskbar readout, at most three.
 
-    Without a saved choice the tray shows Claude 5h, Claude weekly and Fable
-    weekly. An explicitly saved empty list keeps the tray empty.
+    Without a saved choice it shows Claude 5h, Claude weekly and Fable weekly.
+    An explicitly saved empty list turns the readout off.
     """
 
-    raw = settings.get(TRAY_PROVIDERS_SETTING)
+    raw = settings.get(TASKBAR_PROVIDERS_SETTING)
     if not isinstance(raw, (list, tuple)):
-        return DEFAULT_TRAY_PROVIDER_IDS
+        return DEFAULT_TASKBAR_PROVIDER_IDS
 
     selected: list[str] = []
     for item in raw:
         if item in PROVIDER_DEFINITION_BY_ID and item not in selected:
             selected.append(item)
-    return tuple(selected[:MAX_TRAY_PROVIDERS])
+    return tuple(selected[:MAX_TASKBAR_PROVIDERS])

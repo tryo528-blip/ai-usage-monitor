@@ -16,10 +16,12 @@ A local Windows desktop dashboard for monitoring AI provider usage limits, balan
 
 - Main window: ring-gauge cards. Hue identifies the provider, the clockwise arc shows the
   remaining quota, and the number turns amber/red at 20%/5% remaining.
-- Windows taskbar: up to three providers are pinned to the notification area next to the clock
-  as small tiles showing the code above a two-digit remaining number (100 reads `99`, 7 reads
-  `07`). The default is `C5` · `CW` · `FW`; change it in Settings → `작업 표시줄`. With tray
-  icons active, the close button hides the window to the tray; use the tray menu's `종료` to quit.
+- Windows taskbar readout: a slim pill placed on the taskbar shows up to three providers in one
+  line, e.g. `C5 90  CW 95  FW 99` (remaining %, always two digits: 100 reads `99`, 7 reads
+  `07`). The default is `C5` · `CW` · `FW`; change it in Settings → `작업 표시줄`. Drag it
+  sideways to move it (the position is remembered); click to open/hide the window; right-click
+  for refresh, settings and quit. It hides while a full-screen app is in front. With the readout
+  on, the window's close button only hides the window.
 - Keyring-backed secret storage on Windows
 - SQLite history retention
 
@@ -34,15 +36,15 @@ python -m pip install -e '.[dev]'
 
 ## Install (build + start at login)
 
-Double-click `install.bat` (PowerShell 7), or run:
+Double-click `install.bat` (uses PowerShell 7 when present, else Windows PowerShell), or run:
 
 ```powershell
 pwsh -ExecutionPolicy Bypass -File scripts\install.ps1
 ```
 
 This rebuilds both executables, installs them to `%LOCALAPPDATA%\Programs\AIUsageMonitor`,
-removes old copies from the desktop, and adds a Startup shortcut that launches with `--tray`
-(only the taskbar gauges appear at login). Running it again updates in place. Remove with
+removes old copies from the desktop, and adds a Startup shortcut that launches with `--hidden`
+(only the taskbar readout appears at login). Running it again updates in place. Remove with
 `install.bat -Uninstall`; settings and history in `%APPDATA%\AIUsageMonitor` are kept.
 Launching the app while it is already running brings the existing window forward.
 
@@ -80,6 +82,6 @@ ruff format --check .
   skipped because credits are optional and should not delay or mark the quota cards critical.
 - Fable weekly (`FW`) is any usage-API bucket whose key mentions `fable`, or the `이번 주 Fable` /
   `Current week (Fable …)` line in CLI output.
-- Windows 11 hides new tray icons in the overflow (^) menu by default. Drag them onto the
-  taskbar, or enable them under Settings → Personalization → Taskbar → Other system tray icons.
+- Windows 11 has no API for adding text to the taskbar, so the readout is an always-on-top
+  window positioned over it that re-asserts itself twice a second.
 - Automatic refresh runs every 10 minutes. Claude percentages come from the CLI `/usage` output.

@@ -1,13 +1,12 @@
 # Rebuild AI Usage Monitor, install it under %LOCALAPPDATA%\Programs, and start it at login.
 #
-# Written for PowerShell 7 (pwsh):
+# Works in PowerShell 7 (pwsh) and Windows PowerShell 5.1:
 #   pwsh -ExecutionPolicy Bypass -File scripts\install.ps1            # build + install
 #   pwsh -ExecutionPolicy Bypass -File scripts\install.ps1 -Uninstall # remove
 # or double-click install.bat in the repository root.
 #
 # Nothing is placed on the desktop; old desktop copies are removed.
 
-#Requires -Version 7
 param([switch]$Uninstall)
 
 $ErrorActionPreference = "Stop"
@@ -47,8 +46,21 @@ if ($Uninstall) {
 # 1. Python environment (reuse .venv when present).
 $Python = Join-Path (Get-Location) ".venv\Scripts\python.exe"
 if (-not (Test-Path $Python)) {
-    Write-Host "Creating .venv ..."
-    py -3.11 -m venv .venv
+    # First Python >= 3.11 found: py launcher (3.11, then newest 3.x), then python on PATH.
+    $Base = $null
+    foreach ($candidate in @(@("py", "-3.11"), @("py", "-3"), @("python"))) {
+        $exe = $candidate[0]
+        $launcherArgs = @($candidate | Select-Object -Skip 1)
+        if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) { continue }
+        & $exe @launcherArgs -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
+        if ($LASTEXITCODE -eq 0) { $Base = $candidate; break }
+    }
+    if (-not $Base) { throw "Python 3.11+ not found. Install it: winget install Python.Python.3.11" }
+    Write-Host "Creating .venv with: $($Base -join ' ')"
+    $exe = $Base[0]
+    $launcherArgs = @($Base | Select-Object -Skip 1)
+    & $exe @launcherArgs -m venv .venv
+    if ($LASTEXITCODE -ne 0) { throw "Could not create .venv" }
 }
 & $Python -m pip install --quiet --upgrade pip
 & $Python -m pip install --quiet -e ".[dev]"
@@ -67,17 +79,19 @@ if ($LASTEXITCODE -ne 0) { throw "Build failed: $AppName.exe" }
 & $Python -m PyInstaller @Common --console --name "$AppName-cli" src\ai_usage_monitor\__main__.py
 if ($LASTEXITCODE -ne 0) { throw "Build failed: $AppName-cli.exe" }
 
-# 3. Install.
+# 3. Install. Stop again: the build takes a while and the app may have been
+# started meanwhile, which would lock the exe being replaced.
+Stop-RunningApp
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Copy-Item "dist\$AppName.exe" $InstallDir -Force
 Copy-Item "dist\$AppName-cli.exe" $InstallDir -Force
 $AppExe = Join-Path $InstallDir "$AppName.exe"
 
-# 4. Start at login, straight into the taskbar tray.
+# 4. Start at login with only the taskbar readout showing.
 $Shell = New-Object -ComObject WScript.Shell
 $Link = $Shell.CreateShortcut($StartupLink)
 $Link.TargetPath = $AppExe
-$Link.Arguments = "--tray"
+$Link.Arguments = "--hidden"
 $Link.WorkingDirectory = $InstallDir
 $Link.Description = "AI Usage Monitor"
 $Link.Save()

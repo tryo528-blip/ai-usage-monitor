@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from ai_usage_monitor.app import should_show_window, signal_running_instance
 from ai_usage_monitor.domain.enums import ProviderStatus, SourceType
 from ai_usage_monitor.domain.models import QuotaWindow, UsageSnapshot
 from ai_usage_monitor.domain.providers import (
     PROVIDER_CARD_SCHEMA_SETTING,
     PROVIDER_CARD_SCHEMA_VERSION,
-    TRAY_PROVIDERS_SETTING,
-    get_tray_provider_ids,
+    TASKBAR_PROVIDERS_SETTING,
+    get_taskbar_provider_ids,
 )
 from ai_usage_monitor.infrastructure.database import UsageDatabase
 from ai_usage_monitor.infrastructure.secret_store import FakeSecretStore
@@ -20,8 +22,8 @@ from ai_usage_monitor.services.collector_manager import CollectionResult, Collec
 from ai_usage_monitor.ui import theme
 from ai_usage_monitor.ui.main_window import MainWindow
 from ai_usage_monitor.ui.settings_dialog import SettingsDialog
+from ai_usage_monitor.ui.taskbar_bar import taskbar_rect
 from ai_usage_monitor.ui.theme import AlertLevel
-from ai_usage_monitor.ui.tray import TrayController, render_tray_pixmap
 
 
 def _antigravity_snapshot() -> UsageSnapshot:
@@ -59,19 +61,21 @@ def _window(tmp_path, settings: dict) -> MainWindow:
     )
 
 
-def test_tray_selection_defaults_to_claude_session_weekly_and_fable() -> None:
-    assert get_tray_provider_ids({}) == ("claude_5h", "claude", "claude_fable")
-    assert get_tray_provider_ids({"visible_providers": ["grok"]}) == (
+def test_taskbar_selection_defaults_to_claude_session_weekly_and_fable() -> None:
+    assert get_taskbar_provider_ids({}) == ("claude_5h", "claude", "claude_fable")
+    assert get_taskbar_provider_ids({"visible_providers": ["grok"]}) == (
         "claude_5h",
         "claude",
         "claude_fable",
     )
 
 
-def test_tray_selection_keeps_saved_order_drops_unknown_and_caps_at_three() -> None:
-    settings = {TRAY_PROVIDERS_SETTING: ["antyg_5h", "nope", "codex", "antyg_5h", "grok", "kimi3"]}
-    assert get_tray_provider_ids(settings) == ("antyg_5h", "codex", "grok")
-    assert get_tray_provider_ids({TRAY_PROVIDERS_SETTING: []}) == ()
+def test_taskbar_selection_keeps_saved_order_drops_unknown_and_caps_at_three() -> None:
+    settings = {
+        TASKBAR_PROVIDERS_SETTING: ["antyg_5h", "nope", "codex", "antyg_5h", "grok", "kimi3"]
+    }
+    assert get_taskbar_provider_ids(settings) == ("antyg_5h", "codex", "grok")
+    assert get_taskbar_provider_ids({TASKBAR_PROVIDERS_SETTING: []}) == ()
 
 
 def test_cards_color_each_window_by_its_own_remaining_quota(qtbot, tmp_path) -> None:
@@ -93,71 +97,134 @@ def test_cards_color_each_window_by_its_own_remaining_quota(qtbot, tmp_path) -> 
     assert five_hour.accent == weekly.accent == theme.PROVIDER_ACCENTS["antyg"]
 
 
-def test_tray_icons_follow_selected_cards_even_when_hidden(qtbot, tmp_path) -> None:
+def test_taskbar_bar_follows_selected_cards_even_when_hidden(qtbot, tmp_path) -> None:
     QApplication.instance() or QApplication([])
     window = _window(
         tmp_path,
-        {"visible_providers": ["grok"], TRAY_PROVIDERS_SETTING: ["antyg_5h", "antyg"]},
+        {"visible_providers": ["grok"], TASKBAR_PROVIDERS_SETTING: ["antyg_5h", "antyg"]},
     )
     qtbot.addWidget(window)
 
-    assert list(window.tray.icons) == ["antyg_5h", "antyg"]
+    assert list(window.taskbar_bar.items) == ["antyg_5h", "antyg"]
+    assert window.taskbar_bar.isVisible()
     assert window.tracked_provider_ids == ("grok", "antyg_5h", "antyg")
+    assert window.taskbar_bar.text() == "A5 --  AW --"
 
     window._handle_result(CollectionResult("antyg", _antigravity_snapshot()))
 
-    assert window.cards["antyg_5h"].compact_value() == "03"
-    tooltip = window.tray.icons["antyg_5h"].toolTip()
+    assert window.taskbar_bar.text() == "A5 03  AW 78"
+    tooltip = window.taskbar_bar.toolTip()
     assert tooltip.startswith("A503 · Antigravity 5h 3%")
-    assert "초기화" in tooltip
-    assert window.tray.icons["antyg"].toolTip().startswith("AW78 · Antigravity Weekly 78%")
-    assert not window.tray.icons["antyg"].icon().isNull()
+    assert "AW78 · Antigravity Weekly 78%" in tooltip
+    assert window.taskbar_bar.items["antyg_5h"].level == AlertLevel.CRITICAL
 
 
-def test_saving_settings_updates_tray_selection(qtbot, tmp_path) -> None:
+def test_saving_settings_updates_taskbar_selection(qtbot, tmp_path) -> None:
     QApplication.instance() or QApplication([])
     window = _window(tmp_path, {"visible_providers": ["grok"]})
     qtbot.addWidget(window)
-    assert list(window.tray.icons) == ["claude_5h", "claude", "claude_fable"]
+    assert list(window.taskbar_bar.items) == ["claude_5h", "claude", "claude_fable"]
 
     dialog = SettingsDialog(secret_store=FakeSecretStore(), settings_store=window.settings_store)
     qtbot.addWidget(dialog)
-    assert [combo.currentData() for combo in dialog.tray_combos] == [
+    assert [combo.currentData() for combo in dialog.taskbar_combos] == [
         "claude_5h",
         "claude",
         "claude_fable",
     ]
-    dialog.tray_combos[0].setCurrentIndex(dialog.tray_combos[0].findData("codex_5h"))
-    dialog.tray_combos[1].setCurrentIndex(dialog.tray_combos[1].findData("codex_5h"))
-    dialog.tray_combos[2].setCurrentIndex(dialog.tray_combos[2].findData("openrouter"))
+    dialog.taskbar_combos[0].setCurrentIndex(dialog.taskbar_combos[0].findData("codex_5h"))
+    dialog.taskbar_combos[1].setCurrentIndex(dialog.taskbar_combos[1].findData("codex_5h"))
+    dialog.taskbar_combos[2].setCurrentIndex(dialog.taskbar_combos[2].findData("openrouter"))
     dialog.save_settings()
 
-    assert window.settings_store.load()[TRAY_PROVIDERS_SETTING] == ["codex_5h", "openrouter"]
+    assert window.settings_store.load()[TASKBAR_PROVIDERS_SETTING] == ["codex_5h", "openrouter"]
     assert window._apply_settings() is True
-    assert list(window.tray.icons) == ["codex_5h", "openrouter"]
+    assert list(window.taskbar_bar.items) == ["codex_5h", "openrouter"]
     assert window.tracked_provider_ids == ("codex_5h", "grok", "openrouter")
 
+    window.settings_store.save(window.settings_store.load() | {TASKBAR_PROVIDERS_SETTING: []})
+    window._apply_settings()
+    assert not window.taskbar_bar.active
+    assert not window.taskbar_bar.isVisible()
 
-def test_close_hides_to_tray_and_quit_really_closes(qtbot, tmp_path, monkeypatch) -> None:
+
+def test_close_hides_window_while_taskbar_bar_shows_and_quit_closes(qtbot, tmp_path) -> None:
     QApplication.instance() or QApplication([])
-    monkeypatch.setattr(TrayController, "is_available", staticmethod(lambda: True))
-    window = _window(tmp_path, {"visible_providers": ["grok"], TRAY_PROVIDERS_SETTING: ["grok"]})
+    window = _window(tmp_path, {"visible_providers": ["grok"]})
     qtbot.addWidget(window)
     window.show()
     qtbot.waitExposed(window)
 
     window.close()
     assert not window.isVisible()
-    assert list(window.tray.icons) == ["grok"]
+    assert window.taskbar_bar.isVisible()
 
-    window.toggle_visible()
+    QTest.mouseClick(window.taskbar_bar, Qt.MouseButton.LeftButton)
     assert window.isVisible()
 
     window.quit_app()
     assert not window.isVisible()
+    assert not window.taskbar_bar.isVisible()
 
 
-def test_tray_value_is_always_two_digits(qtbot, tmp_path) -> None:
+def test_session_end_lets_close_through(qtbot, tmp_path) -> None:
+    QApplication.instance() or QApplication([])
+    window = _window(tmp_path, {"visible_providers": ["grok"]})
+    qtbot.addWidget(window)
+    window.show()
+
+    window.allow_close()
+    window.close()
+
+    assert not window.isVisible()
+
+
+def test_dragging_the_bar_moves_it_and_remembers_offset(qtbot, tmp_path) -> None:
+    QApplication.instance() or QApplication([])
+    window = _window(tmp_path, {"visible_providers": ["grok"]})
+    qtbot.addWidget(window)
+    bar = window.taskbar_bar
+    start_x = bar.x()
+
+    QTest.mousePress(bar, Qt.MouseButton.LeftButton, pos=QPoint(10, 5))
+    QTest.mouseMove(bar, QPoint(70, 5))
+    QTest.mouseRelease(bar, Qt.MouseButton.LeftButton, pos=QPoint(70, 5))
+
+    assert bar.x() == start_x + 60
+    assert window.settings_store.load()["taskbar_offset_x"] == bar.offset_x
+    assert not window.isVisible()  # a drag is not a click
+
+
+def test_taskbar_rect_uses_reserved_strip_or_bottom_fallback() -> None:
+    screen = QRect(0, 0, 1920, 1080)
+    assert taskbar_rect(screen, QRect(0, 0, 1920, 1032)) == QRect(0, 1032, 1920, 48)
+    assert taskbar_rect(screen, QRect(0, 40, 1920, 1040)) == QRect(0, 0, 1920, 40)
+    assert taskbar_rect(screen, screen) == QRect(0, 1032, 1920, 48)
+
+
+def test_hidden_start_only_when_taskbar_readout_exists() -> None:
+    assert should_show_window(False, True)
+    assert not should_show_window(True, True)
+    assert should_show_window(True, False)
+
+
+def test_second_launch_reaches_running_instance(qtbot) -> None:
+    from PySide6.QtNetwork import QLocalServer
+
+    QApplication.instance() or QApplication([])
+    key = "AIUsageMonitor.test-instance"
+    assert not signal_running_instance(key)
+
+    QLocalServer.removeServer(key)
+    server = QLocalServer()
+    assert server.listen(key)
+    try:
+        assert signal_running_instance(key)
+    finally:
+        server.close()
+
+
+def test_taskbar_value_is_always_two_digits(qtbot, tmp_path) -> None:
     QApplication.instance() or QApplication([])
     window = _window(tmp_path, {"visible_providers": ["claude_5h", "claude", "claude_fable"]})
     qtbot.addWidget(window)
@@ -177,7 +244,7 @@ def test_tray_value_is_always_two_digits(qtbot, tmp_path) -> None:
 
     window._handle_result(CollectionResult("claude", snapshot))
 
-    assert [window.cards[key].compact_value() for key in window.tray_provider_ids] == [
+    assert [window.cards[key].compact_value() for key in window.taskbar_provider_ids] == [
         "90",
         "07",
         "99",
@@ -185,20 +252,3 @@ def test_tray_value_is_always_two_digits(qtbot, tmp_path) -> None:
     assert window.cards["claude_fable"].value_label.text() == "100%"
     window.cards["grok"].set_loading()
     assert window.cards["grok"].compact_value() == "--"
-
-
-def test_tray_pixmap_draws_code_and_number_on_dark_tile(qtbot) -> None:
-    QApplication.instance() or QApplication([])
-    pixmap = render_tray_pixmap(32, "C5", "90", "#e07a5f", AlertLevel.OK)
-    image = pixmap.toImage()
-
-    assert pixmap.width() == pixmap.height() == 32
-    assert image.pixelColor(0, 0).alpha() == 0
-    background = QColor(theme.BACKGROUND)
-    top = [image.pixelColor(x, y) for x in range(32) for y in range(3, 15)]
-    bottom = [image.pixelColor(x, y) for x in range(32) for y in range(17, 30)]
-    # The code row carries the provider accent; the number row is near white.
-    assert any(c.red() > 180 and c.blue() < 140 for c in top)
-    assert any(min(c.red(), c.green(), c.blue()) > 200 for c in bottom)
-    assert image.pixelColor(16, 16).alpha() == 255
-    assert QColor(image.pixelColor(2, 16)).lightness() == background.lightness()

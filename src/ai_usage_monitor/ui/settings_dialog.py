@@ -18,13 +18,13 @@ from PySide6.QtWidgets import (
 )
 
 from ai_usage_monitor.domain.providers import (
-    MAX_TRAY_PROVIDERS,
+    MAX_TASKBAR_PROVIDERS,
     PROVIDER_CARD_SCHEMA_SETTING,
     PROVIDER_CARD_SCHEMA_VERSION,
     PROVIDER_DEFINITIONS,
-    TRAY_PROVIDERS_SETTING,
+    TASKBAR_PROVIDERS_SETTING,
     VISIBLE_PROVIDERS_SETTING,
-    get_tray_provider_ids,
+    get_taskbar_provider_ids,
     get_visible_provider_ids,
 )
 from ai_usage_monitor.infrastructure.secret_store import SecretStore
@@ -162,7 +162,7 @@ class SettingsDialog(QDialog):
         layout.setSpacing(14)
         layout.addWidget(self._build_header())
         layout.addWidget(self._build_models_section(visible_provider_ids))
-        layout.addWidget(self._build_tray_section(get_tray_provider_ids(settings)))
+        layout.addWidget(self._build_taskbar_section(get_taskbar_provider_ids(settings)))
         layout.addWidget(self._build_key_section())
         layout.addWidget(
             self._build_runtime_section(
@@ -274,36 +274,36 @@ class SettingsDialog(QDialog):
         section_layout.addLayout(grid)
         return section
 
-    def _build_tray_section(self, tray_ids: tuple[str, ...]) -> QFrame:
+    def _build_taskbar_section(self, taskbar_ids: tuple[str, ...]) -> QFrame:
         section, section_layout = self._section()
         section.setFixedHeight(96)
         self._section_heading(
             section_layout,
             "작업 표시줄",
-            f"시계 옆 알림 영역에 최대 {MAX_TRAY_PROVIDERS}개를 링 게이지로 표시합니다.",
+            f"작업 표시줄 위에 최대 {MAX_TASKBAR_PROVIDERS}개를 크게 표시 · 드래그로 이동",
         )
         row = QHBoxLayout()
         row.setContentsMargins(0, 4, 0, 0)
         row.setSpacing(8)
-        self.tray_combos: list[QComboBox] = []
-        for slot in range(MAX_TRAY_PROVIDERS):
+        self.taskbar_combos: list[QComboBox] = []
+        for slot in range(MAX_TASKBAR_PROVIDERS):
             combo = QComboBox()
             combo.addItem("없음", None)
             for definition in PROVIDER_DEFINITIONS:
                 if definition.summary_type == "manual":
                     continue
                 combo.addItem(definition.full_name or definition.title, definition.provider_id)
-            if slot < len(tray_ids):
-                combo.setCurrentIndex(max(0, combo.findData(tray_ids[slot])))
-            combo.setToolTip(f"작업 표시줄 {slot + 1}번째 게이지")
-            self.tray_combos.append(combo)
+            if slot < len(taskbar_ids):
+                combo.setCurrentIndex(max(0, combo.findData(taskbar_ids[slot])))
+            combo.setToolTip(f"작업 표시줄 {slot + 1}번째 항목")
+            self.taskbar_combos.append(combo)
             row.addWidget(combo, 1)
         section_layout.addLayout(row)
         return section
 
-    def selected_tray_provider_ids(self) -> list[str]:
+    def selected_taskbar_provider_ids(self) -> list[str]:
         selected: list[str] = []
-        for combo in self.tray_combos:
+        for combo in self.taskbar_combos:
             provider_id = combo.currentData()
             if provider_id and provider_id not in selected:
                 selected.append(provider_id)
@@ -419,6 +419,6 @@ class SettingsDialog(QDialog):
             for definition in PROVIDER_DEFINITIONS
             if self.provider_checkboxes[definition.provider_id].isChecked()
         ]
-        settings[TRAY_PROVIDERS_SETTING] = self.selected_tray_provider_ids()
+        settings[TASKBAR_PROVIDERS_SETTING] = self.selected_taskbar_provider_ids()
         self.settings_store.save(settings)
         self.accept()

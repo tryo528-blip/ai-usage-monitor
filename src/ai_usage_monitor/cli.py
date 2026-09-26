@@ -31,6 +31,25 @@ def _format_snapshot(snapshot: UsageSnapshot) -> str:
     return "\n".join(lines)
 
 
+_REDACT_MARKERS = ("id", "uuid", "email", "org", "account", "name", "token")
+
+
+def redact_identifiers(value):
+    """Mask account-identifying fields so the dump is safe to paste anywhere."""
+
+    if isinstance(value, dict):
+        return {
+            key: "***"
+            if any(marker in str(key).lower() for marker in _REDACT_MARKERS)
+            and not isinstance(val, (dict, list))
+            else redact_identifiers(val)
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_identifiers(item) for item in value]
+    return value
+
+
 def dump_claude_raw() -> int:
     """Print what the Claude collector sees, to check the Fable bucket's name."""
 
@@ -43,7 +62,7 @@ def dump_claude_raw() -> int:
     if data is None:
         print("(no response: missing/expired token or request failed)")
     else:
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        print(json.dumps(redact_identifiers(data), ensure_ascii=False, indent=2))
     print()
     print("=== claude -p /usage ===")
     try:

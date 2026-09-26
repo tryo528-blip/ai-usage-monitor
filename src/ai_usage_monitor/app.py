@@ -11,16 +11,25 @@ from ai_usage_monitor.ui.main_window import MainWindow
 # One running copy per Windows user. A second launch (for example the Startup
 # shortcut plus a manual start) just brings the first window forward.
 _INSTANCE_KEY = "AIUsageMonitor.single-instance"
-_START_IN_TRAY_FLAG = "--tray"
+# Startup shortcut flag: begin with only the taskbar readout, window hidden.
+_START_HIDDEN_FLAG = "--hidden"
+# Generous enough for a busy login; a missing server fails immediately anyway.
+_CONNECT_TIMEOUT_MS = 1000
 
 
-def _signal_running_instance() -> bool:
+def should_show_window(start_hidden: bool, taskbar_active: bool) -> bool:
+    """At login (--hidden) only the taskbar readout appears, if there is one."""
+
+    return not (start_hidden and taskbar_active)
+
+
+def signal_running_instance(key: str = _INSTANCE_KEY) -> bool:
     socket = QLocalSocket()
-    socket.connectToServer(_INSTANCE_KEY)
-    if not socket.waitForConnected(300):
+    socket.connectToServer(key)
+    if not socket.waitForConnected(_CONNECT_TIMEOUT_MS):
         return False
     socket.write(b"show")
-    socket.waitForBytesWritten(300)
+    socket.waitForBytesWritten(_CONNECT_TIMEOUT_MS)
     socket.disconnectFromServer()
     return True
 
@@ -30,11 +39,11 @@ class App:
         argv = sys.argv if argv is None else argv
         self.logger = configure_logging()
         self.app = QApplication(argv)
-        # The window may hide into the taskbar tray; MainWindow decides when
+        # The window may hide behind the taskbar readout; MainWindow decides when
         # closing actually quits.
         self.app.setQuitOnLastWindowClosed(False)
-        self.start_in_tray = _START_IN_TRAY_FLAG in argv
-        self.already_running = _signal_running_instance()
+        self.start_hidden = _START_HIDDEN_FLAG in argv
+        self.already_running = signal_running_instance()
         if self.already_running:
             return
 
@@ -43,6 +52,9 @@ class App:
         self.server.newConnection.connect(self._show_from_second_launch)
         self.server.listen(_INSTANCE_KEY)
         self.window = MainWindow()
+        # Windows logoff/shutdown must not be blocked by the hide-on-close.
+        self.app.commitDataRequest.connect(self.window.allow_close)
+        self.app.aboutToQuit.connect(self.window.allow_close)
 
     def _show_from_second_launch(self) -> None:
         while self.server.hasPendingConnections():
@@ -54,9 +66,8 @@ class App:
     def run(self) -> None:
         if self.already_running:
             return
-        # At login the Startup shortcut passes --tray: only the taskbar gauges
-        # appear. Without tray icons there would be nothing to click, so the
-        # window is shown anyway.
-        if not (self.start_in_tray and self.window.tray.active):
+        # Without the taskbar readout there would be nothing to click, so the
+        # window is shown even with --hidden.
+        if should_show_window(self.start_hidden, self.window.taskbar_bar.active):
             self.window.show()
         self.app.exec()

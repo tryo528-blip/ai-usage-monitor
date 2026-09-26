@@ -143,7 +143,7 @@ def test_main_window_applies_visible_provider_selection(qtbot, tmp_path) -> None
         "GR",
         "OR",
     ]
-    # The default tray (C5 / CW / FW) keeps the Claude collector running even
+    # The default taskbar readout (C5 / CW / FW) keeps the Claude collector running even
     # though no Claude card is visible in the window.
     assert [collector.provider_id for collector in window.collector_manager.collectors] == [
         "grok",

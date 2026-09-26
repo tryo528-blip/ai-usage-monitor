@@ -22,20 +22,25 @@ CLAUDE_CONFIG_DIR = Path.home() / ".claude"
 CLAUDE_CODE_DIR = Path.home() / "AppData" / "Roaming" / "Claude" / "claude-code"
 USAGE_TIMEOUT_SECONDS = 30
 _PERCENT = r"(?P<percent>\d+(?:\.\d+)?)\s*%"
+# Any other bucket's label. The gap between a label and its percentage may not
+# run into one, so a line without a number never borrows the next line's value
+# (the output is whitespace-collapsed before matching).
+_NEXT_LABEL = r"Current (?:session|week)|현재 세션|이번 주"
+_GAP = r"(?:(?!" + _NEXT_LABEL + r")[^%]){0,80}?"
 # English CLI output ("Current week (Fable only): 0% used") and the Korean UI
-# wording ("이번 주 Fable ... 0% 사용됨"). The label-to-percent gap may not
-# cross another percent sign, so one line never borrows the next line's value.
+# wording ("이번 주 Fable ... 0% 사용됨").
 USAGE_LINE_PATTERNS = {
-    "five_hour": re.compile(
-        r"(?:Current session|현재 세션)[^%]{0,80}?" + _PERCENT,
-        re.IGNORECASE,
-    ),
+    "five_hour": re.compile(r"(?:Current session|현재 세션)" + _GAP + _PERCENT, re.IGNORECASE),
+    # "Current week (all models)" or a bare "Current week", but never a
+    # model-specific "Current week (Sonnet only)" / "(Fable)".
     "weekly": re.compile(
-        r"(?:Current week \(all models\)|이번 주(?!\s*\(?\s*fable))[^%]{0,80}?" + _PERCENT,
+        r"(?:Current week(?:\s*\(all models\)|(?!\s*\())|이번 주(?!\s*\(?\s*fable))"
+        + _GAP
+        + _PERCENT,
         re.IGNORECASE,
     ),
     "weekly_fable": re.compile(
-        r"(?:Current week|이번 주)\s*\(?[^%:]{0,20}?fable[^%]{0,80}?" + _PERCENT,
+        r"(?:Current week|이번 주)\s*\(?[^%:]{0,20}?fable" + _GAP + _PERCENT,
         re.IGNORECASE,
     ),
 }
@@ -46,10 +51,12 @@ USAGE_LABELS = {
 }
 USAGE_API_URL = "https://api.anthropic.com/api/oauth/usage"
 USAGE_API_TIMEOUT_SECONDS = 10
-# Top-level buckets of the usage API that the settings page renders as
-# "현재 세션" and "이번 주". Any bucket whose path mentions "fable" is the
-# separate Fable weekly limit, whatever the exact key is.
+# Buckets of the usage API that the settings page renders as "현재 세션" and
+# "이번 주", matched by their own key wherever they are nested. Any bucket whose
+# path mentions "fable" is the separate Fable limit, whatever the exact key is.
 API_BUCKET_KEYS = {"five_hour": "five_hour", "seven_day": "weekly"}
+# Treat a token as expired slightly early so a request never races expiry.
+TOKEN_EXPIRY_MARGIN_SECONDS = 60
 RESET_PATTERN = re.compile(r"resets\s+(?P<reset>.+?)\s+\((?P<zone>[^)]+)\)", re.IGNORECASE)
 
 
@@ -140,8 +147,14 @@ class ClaudeBridgeCollector(Collector):
             return None
         token = oauth.get("accessToken")
         expires_at = oauth.get("expiresAt")
-        if isinstance(expires_at, (int, float)) and expires_at / 1000 <= now.timestamp():
-            # Expired: the CLI path below refreshes it as a side effect.
+        # expiresAt is epoch milliseconds; 0 or missing means no known expiry.
+        # An expired token is left alone: refreshing it here would rotate the
+        # refresh token under Claude Code. The CLI path renews it instead.
+        if (
+            isinstance(expires_at, (int, float))
+            and expires_at > 0
+            and expires_at / 1000 <= now.timestamp() + TOKEN_EXPIRY_MARGIN_SECONDS
+        ):
             return None
         return token if isinstance(token, str) and token else None
 
@@ -186,15 +199,19 @@ class ClaudeBridgeCollector(Collector):
     @classmethod
     def _parse_usage_json(cls, data: Any) -> list[QuotaWindow]:
         found: dict[str, dict] = {}
+        fable_rank = -1
         for path, bucket in cls._iter_buckets(data):
+            if not path:
+                continue
             joined = "/".join(path).lower()
             if "fable" in joined:
-                key = "weekly_fable"
-            elif len(path) == 1 and path[0] in API_BUCKET_KEYS:
-                key = API_BUCKET_KEYS[path[0]]
-            else:
-                continue
-            found.setdefault(key, bucket)
+                # If Fable ever gets several windows, the weekly one wins.
+                rank = 1 if ("seven_day" in joined or "week" in joined) else 0
+                if rank > fable_rank:
+                    found["weekly_fable"] = bucket
+                    fable_rank = rank
+            elif path[-1] in API_BUCKET_KEYS:
+                found.setdefault(API_BUCKET_KEYS[path[-1]], bucket)
 
         quotas = []
         for key in ("five_hour", "weekly", "weekly_fable"):
