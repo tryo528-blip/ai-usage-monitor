@@ -50,23 +50,101 @@ def redact_identifiers(value):
     return value
 
 
-def dump_claude_raw() -> int:
-    """Print what the Claude collector sees, to check the Fable bucket's name."""
+def _describe_credentials(now) -> tuple[list[str], str | None]:
+    """Explain the stored Claude Code login without ever printing the token."""
 
     import json
     from datetime import datetime, timezone
 
-    now = datetime.now(timezone.utc)
-    print("=== usage API (api.anthropic.com/api/oauth/usage) ===")
-    data = ClaudeBridgeCollector.fetch_usage_json(now=now)
-    if data is None:
-        print("(no response: missing/expired token or request failed)")
+    from ai_usage_monitor.collectors import claude_bridge
+
+    path = claude_bridge.CLAUDE_CONFIG_DIR / ".credentials.json"
+    lines = [f"credentials file : {path}"]
+    if not path.exists():
+        lines.append("  -> MISSING")
+        try:
+            names = sorted(item.name for item in claude_bridge.CLAUDE_CONFIG_DIR.iterdir())
+            lines.append(f"  files in {claude_bridge.CLAUDE_CONFIG_DIR}: {', '.join(names[:40])}")
+        except OSError as exc:
+            lines.append(f"  cannot list folder: {exc.__class__.__name__}")
+        return lines, None
+    try:
+        data = json.loads(path.read_text("utf-8"))
+    except (OSError, ValueError) as exc:
+        lines.append(f"  -> unreadable ({exc.__class__.__name__})")
+        return lines, None
+    if not isinstance(data, dict):
+        lines.append("  -> unexpected content")
+        return lines, None
+    lines.append(f"  top-level keys : {', '.join(map(str, data))}")
+    oauth = data.get("claudeAiOauth")
+    if not isinstance(oauth, dict):
+        lines.append("  -> no claudeAiOauth section")
+        return lines, None
+    token = oauth.get("accessToken")
+    token = token if isinstance(token, str) and token else None
+    lines.append(f"  accessToken    : {'present' if token else 'MISSING'}")
+    lines.append(f"  refreshToken   : {'present' if oauth.get('refreshToken') else 'missing'}")
+    expires_at = oauth.get("expiresAt")
+    if isinstance(expires_at, (int, float)) and expires_at > 0:
+        expiry = datetime.fromtimestamp(expires_at / 1000, tz=timezone.utc)
+        minutes = round((expiry - now).total_seconds() / 60)
+        state = f"valid for {minutes} min" if minutes > 0 else f"EXPIRED {-minutes} min ago"
+        lines.append(f"  expiresAt      : {expiry.astimezone():%Y-%m-%d %H:%M} ({state})")
     else:
-        print(json.dumps(redact_identifiers(data), ensure_ascii=False, indent=2))
+        lines.append(f"  expiresAt      : {expires_at!r}")
+    for key in ("scopes", "subscriptionType", "rateLimitTier"):
+        if key in oauth:
+            lines.append(f"  {key:<15}: {oauth[key]}")
+    return lines, token
+
+
+def dump_claude_raw() -> int:
+    """Print what the Claude collector sees, to find why Claude reads "--"."""
+
+    import json
+    from datetime import datetime, timezone
+
+    import httpx
+
+    from ai_usage_monitor.collectors import claude_bridge
+
+    now = datetime.now(timezone.utc)
+    print("=== Claude Code login ===")
+    lines, token = _describe_credentials(now)
+    print("\n".join(lines))
+    print()
+    print(f"=== usage API ({claude_bridge.USAGE_API_URL}) ===")
+    if token is None:
+        print("(skipped: no access token)")
+    else:
+        # Tried even when expired so the server's answer is visible.
+        try:
+            response = httpx.get(
+                claude_bridge.USAGE_API_URL,
+                headers={"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"},
+                timeout=claude_bridge.USAGE_API_TIMEOUT_SECONDS,
+            )
+        except httpx.HTTPError as exc:
+            print(f"request failed: {exc.__class__.__name__}: {exc}")
+        else:
+            print(f"HTTP {response.status_code}")
+            try:
+                body = redact_identifiers(response.json())
+                print(json.dumps(body, ensure_ascii=False, indent=2)[:4000])
+            except ValueError:
+                print(response.text[:500])
+            quotas = claude_bridge.ClaudeBridgeCollector._parse_usage_json(
+                response.json() if response.is_success else None
+            )
+            print("parsed:", [(q.key, q.used_percent) for q in quotas] or "nothing")
     print()
     print("=== claude -p /usage ===")
     try:
-        print(ClaudeBridgeCollector._run_usage())
+        output = claude_bridge.ClaudeBridgeCollector._run_usage()
+        print(output)
+        if "Total cost:" in output:
+            print("-> this CLI prints the cost summary for /usage in -p mode, not the limits")
     except Exception as exc:  # noqa: BLE001 - diagnostics must always finish
         print(f"(failed: {exc})")
     return 0

@@ -401,3 +401,21 @@ def test_cli_parser_reads_korean_usage_text() -> None:
         ("weekly", 17.0),
         ("weekly_fable", 0.0),
     ]
+
+
+def test_cost_summary_from_cli_reports_token_problem(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(claude_bridge, "CLAUDE_CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(
+        ClaudeBridgeCollector, "fetch_usage_json", classmethod(lambda cls, now: None)
+    )
+    monkeypatch.setattr(
+        ClaudeBridgeCollector,
+        "_run_usage",
+        staticmethod(lambda: "Total cost:            $0.0000\nUsage: 0 input, 0 output"),
+    )
+
+    snapshot = ClaudeBridgeCollector().collect()
+
+    assert snapshot.status == ProviderStatus.AUTH_REQUIRED
+    assert snapshot.error_code == "CLAUDE_TOKEN_UNAVAILABLE"
+    assert "토큰" in snapshot.message

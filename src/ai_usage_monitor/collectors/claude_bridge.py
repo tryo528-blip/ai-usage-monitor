@@ -112,6 +112,15 @@ class ClaudeBridgeCollector(Collector):
             )
 
         quota_windows = self._parse_usage(usage_output, now=now)
+        if not quota_windows and "Total cost:" in (usage_output or ""):
+            # Non-interactive `claude -p /usage` prints the cost summary, not
+            # the plan limits, so only the usage API can supply them.
+            return self._snapshot(
+                status=ProviderStatus.AUTH_REQUIRED,
+                message="Claude 로그인 토큰 만료/없음 · Claude Code를 한 번 사용하면 갱신됩니다",
+                collected_at=now,
+                error_code="CLAUDE_TOKEN_UNAVAILABLE",
+            )
         if not quota_windows:
             return self._snapshot(
                 status=ProviderStatus.ERROR,
