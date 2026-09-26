@@ -31,7 +31,13 @@ def _format_snapshot(snapshot: UsageSnapshot) -> str:
     return "\n".join(lines)
 
 
-_REDACT_MARKERS = ("id", "uuid", "email", "org", "account", "name", "token")
+# Account identifiers only; model and feature names stay readable.
+_REDACT_MARKERS = ("uuid", "email", "org", "account", "token")
+
+
+def _is_identifier(key: object) -> bool:
+    name = str(key).lower()
+    return name.endswith("_id") or any(marker in name for marker in _REDACT_MARKERS)
 
 
 def redact_identifiers(value):
@@ -40,8 +46,7 @@ def redact_identifiers(value):
     if isinstance(value, dict):
         return {
             key: "***"
-            if any(marker in str(key).lower() for marker in _REDACT_MARKERS)
-            and not isinstance(val, (dict, list))
+            if _is_identifier(key) and not isinstance(val, (dict, list))
             else redact_identifiers(val)
             for key, val in value.items()
         }

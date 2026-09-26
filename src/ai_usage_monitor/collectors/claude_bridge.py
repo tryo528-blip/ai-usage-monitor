@@ -222,6 +222,24 @@ class ClaudeBridgeCollector(Collector):
             elif path[-1] in API_BUCKET_KEYS:
                 found.setdefault(API_BUCKET_KEYS[path[-1]], bucket)
 
+        # Newer responses also carry a "limits" list; per-model weekly limits
+        # (Fable) appear only there, as kind "weekly_scoped" with the model in
+        # "scope". Top-level buckets above win when both are present.
+        limits = data.get("limits") if isinstance(data, dict) else None
+        for entry in limits if isinstance(limits, list) else []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("percent"), (int, float)):
+                continue
+            bucket = {"utilization": entry["percent"], "resets_at": entry.get("resets_at")}
+            kind = entry.get("kind")
+            if kind == "session":
+                found.setdefault("five_hour", bucket)
+            elif kind == "weekly_all":
+                found.setdefault("weekly", bucket)
+            elif kind == "weekly_scoped" and "fable" in cls._scope_text(entry.get("scope")):
+                if fable_rank < 2:
+                    found["weekly_fable"] = bucket
+                    fable_rank = 2
+
         quotas = []
         for key in ("five_hour", "weekly", "weekly_fable"):
             bucket = found.get(key)
@@ -239,6 +257,16 @@ class ClaudeBridgeCollector(Collector):
                 )
             )
         return quotas
+
+    @staticmethod
+    def _scope_text(scope: Any) -> str:
+        """All strings inside a limit's scope, lowercased, e.g. the model name."""
+
+        if isinstance(scope, dict):
+            return " ".join(ClaudeBridgeCollector._scope_text(value) for value in scope.values())
+        if isinstance(scope, list):
+            return " ".join(ClaudeBridgeCollector._scope_text(value) for value in scope)
+        return scope.lower() if isinstance(scope, str) else ""
 
     @staticmethod
     def _parse_iso(value: Any) -> datetime | None:

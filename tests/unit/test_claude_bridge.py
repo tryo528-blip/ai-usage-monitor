@@ -419,3 +419,82 @@ def test_cost_summary_from_cli_reports_token_problem(monkeypatch, tmp_path) -> N
     assert snapshot.status == ProviderStatus.AUTH_REQUIRED
     assert snapshot.error_code == "CLAUDE_TOKEN_UNAVAILABLE"
     assert "토큰" in snapshot.message
+
+
+def test_usage_api_reads_fable_from_weekly_scoped_limit() -> None:
+    # Shape of a real response (trimmed): Fable is only in "limits".
+    data = {
+        "five_hour": {"utilization": 40.0, "resets_at": "2026-09-26T05:20:00.804241+00:00"},
+        "seven_day": {"utilization": 19.0, "resets_at": "2026-09-27T13:00:00.804259+00:00"},
+        "seven_day_opus": None,
+        "iguana_necktie": {"utilization": 5.0005192, "limit_dollars": 250},
+        "nimbus_quill": {"utilization": 0.0, "resets_at": None},
+        "extra_usage": {"is_enabled": False, "utilization": None},
+        "limits": [
+            {"kind": "session", "group": "session", "percent": 40, "scope": None},
+            {"kind": "weekly_all", "group": "weekly", "percent": 19, "scope": None},
+            {
+                "kind": "weekly_scoped",
+                "group": "weekly",
+                "percent": 7,
+                "resets_at": "2026-09-27T13:00:00+00:00",
+                "scope": {
+                    "model": {"id": "claude-fable-5-1", "display_name": "Fable"},
+                    "surface": None,
+                },
+            },
+        ],
+    }
+
+    quotas = ClaudeBridgeCollector._parse_usage_json(data)
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 40.0),
+        ("weekly", 19.0),
+        ("weekly_fable", 7.0),
+    ]
+    assert quotas[2].resets_at == datetime(2026, 9, 27, 13, 0, tzinfo=timezone.utc)
+
+
+def test_usage_api_limits_list_alone_is_enough() -> None:
+    data = {
+        "limits": [
+            {"kind": "session", "percent": 12},
+            {"kind": "weekly_all", "percent": 34},
+            {
+                "kind": "weekly_scoped",
+                "percent": 56,
+                "scope": {"model": {"display_name": "Sonnet"}},
+            },
+        ]
+    }
+
+    quotas = ClaudeBridgeCollector._parse_usage_json(data)
+
+    # A scoped limit for another model is not Fable.
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 12.0),
+        ("weekly", 34.0),
+    ]
+
+
+def test_cli_parser_reads_real_usage_output_with_fable_line() -> None:
+    output = (
+        "You are currently using your subscription to power your Claude Code usage\n\n"
+        "Current session: 40% used · resets Sep 26, 2:20pm (Asia/Seoul)\n"
+        "Current week (all models): 19% used · resets Sep 27, 10pm (Asia/Seoul)\n"
+        "Current week (Fable): 0% used · resets Sep 27, 10pm (Asia/Seoul)\n\n"
+        "What's contributing to your limits usage?\n"
+        "Last 24h · 153 requests · 1 session\n  88% of your usage was at >150k context\n"
+    )
+
+    quotas = ClaudeBridgeCollector._parse_usage(
+        output, now=datetime(2026, 9, 26, 4, 30, tzinfo=timezone.utc)
+    )
+
+    assert [(quota.key, quota.used_percent) for quota in quotas] == [
+        ("five_hour", 40.0),
+        ("weekly", 19.0),
+        ("weekly_fable", 0.0),
+    ]
+    assert quotas[2].resets_at is not None
