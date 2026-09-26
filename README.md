@@ -32,6 +32,20 @@ python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
 ```
 
+## Install (build + start at login)
+
+Double-click `install.bat` (PowerShell 7), or run:
+
+```powershell
+pwsh -ExecutionPolicy Bypass -File scripts\install.ps1
+```
+
+This rebuilds both executables, installs them to `%LOCALAPPDATA%\Programs\AIUsageMonitor`,
+removes old copies from the desktop, and adds a Startup shortcut that launches with `--tray`
+(only the taskbar gauges appear at login). Running it again updates in place. Remove with
+`install.bat -Uninstall`; settings and history in `%APPDATA%\AIUsageMonitor` are kept.
+Launching the app while it is already running brings the existing window forward.
+
 ## Run
 
 ```powershell
